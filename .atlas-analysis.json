@@ -1,0 +1,146 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "AFL++",
+  "projectDescription": "Advanced fuzzing toolkit with instrumentation, QEMU support, and enhanced mutation strategies for security testing",
+  "theme": "aspen",
+  "primaryColor": "#040404",
+  "lightColor": "#e4b744",
+  "darkColor": "#561743",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/fuzzing-overview",
+              "concepts/instrumentation",
+              "concepts/coverage",
+              "concepts/mutations"
+            ]
+          },
+          {
+            "group": "Fuzzing Guides",
+            "pages": [
+              "guides/source-code-fuzzing",
+              "guides/binary-only-fuzzing",
+              "guides/network-services",
+              "guides/gui-programs",
+              "guides/best-practices"
+            ]
+          },
+          {
+            "group": "Instrumentation Modes",
+            "pages": [
+              "instrumentation/llvm-mode",
+              "instrumentation/lto-mode",
+              "instrumentation/gcc-plugin",
+              "instrumentation/persistent-mode",
+              "instrumentation/cmplog",
+              "instrumentation/laf-intel"
+            ]
+          },
+          {
+            "group": "Binary-Only Modes",
+            "pages": [
+              "binary-modes/qemu-mode",
+              "binary-modes/frida-mode",
+              "binary-modes/unicorn-mode",
+              "binary-modes/nyx-mode"
+            ]
+          },
+          {
+            "group": "Advanced Features",
+            "pages": [
+              "advanced/custom-mutators",
+              "advanced/power-schedules",
+              "advanced/dictionaries",
+              "advanced/environment-variables",
+              "advanced/parallel-fuzzing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Command Reference",
+        "groups": [
+          {
+            "group": "Compiler Tools",
+            "pages": [
+              "commands/afl-cc",
+              "commands/afl-c++"
+            ]
+          },
+          {
+            "group": "Fuzzing Tools",
+            "pages": [
+              "commands/afl-fuzz",
+              "commands/afl-showmap",
+              "commands/afl-tmin",
+              "commands/afl-cmin",
+              "commands/afl-analyze"
+            ]
+          },
+          {
+            "group": "Utility Tools",
+            "pages": [
+              "commands/afl-whatsup",
+              "commands/afl-plot",
+              "commands/afl-gotcpu",
+              "commands/afl-system-config"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Resources",
+        "groups": [
+          {
+            "group": "Additional Info",
+            "pages": [
+              "resources/faq",
+              "resources/tutorials",
+              "resources/third-party-tools",
+              "resources/changelog",
+              "resources/contributing"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Multiple instrumentation modes (LLVM, LTO, GCC plugin)",
+    "Binary-only fuzzing with QEMU, FRIDA, Unicorn, and Nyx",
+    "CmpLog and LAF-Intel for enhanced mutation",
+    "Persistent mode and shared memory test cases",
+    "Custom mutators (C/C++, Python, Rust)",
+    "AFLfast power schedules and MOpt mutators",
+    "NeverZero coverage and non-colliding instrumentation",
+    "Parallel fuzzing support",
+    "Cross-platform support (Linux, BSD, macOS, Android)"
+  ],
+  "publicApiSurface": [
+    "afl-cc / afl-c++ - Compiler wrappers for instrumentation",
+    "afl-fuzz - Main fuzzing engine",
+    "afl-showmap - Coverage map display",
+    "afl-tmin - Test case minimizer",
+    "afl-cmin - Corpus minimizer",
+    "afl-analyze - Input file analyzer",
+    "afl-whatsup - Multi-fuzzer status monitor",
+    "afl-plot - Generate fuzzing progress plots",
+    "afl-system-config - System configuration helper",
+    "afl-gotcpu - CPU availability checker",
+    "Custom mutator API (C/C++, Python)",
+    "Environment variables (AFL_* configuration options)"
+  ]
+}
