@@ -1,0 +1,678 @@
+---
+title: 'Parallel Fuzzing'
+description: 'Running efficient multi-core fuzzing campaigns with AFL++'
+icon: 'server'
+---
+
+Parallel fuzzing multiplies your fuzzing effectiveness by running multiple AFL++ instances simultaneously. This guide shows how to maximize coverage and bug discovery using all available CPU cores.
+
+## Why Parallel Fuzzing?
+
+Running a single `afl-fuzz` instance is like searching for bugs with one flashlight. Parallel fuzzing gives you dozens of flashlights, each exploring different strategies:
+
+- **Increased throughput**: More executions per second
+- **Strategy diversity**: Different mutation approaches find different bugs
+- **Path exploration**: Multiple instances explore different code paths
+- **Sanitizer coverage**: Run sanitized targets without slowing down the main campaign
+
+<Warning>
+If you're not using parallel fuzzing, you're leaving 90% of potential bug discoveries on the table.
+</Warning>
+
+## Architecture
+
+AFL++ parallel fuzzing uses a main/secondary architecture:
+
+- **Main instance** (`-M`): Coordinates the campaign, performs final sync
+- **Secondary instances** (`-S`): Run independently with various strategies
+
+All instances share the same output directory and automatically sync discoveries.
+
+```
+output/
+├── main-hostname/        # Main fuzzer
+│   ├── queue/
+│   ├── crashes/
+│   └── fuzzer_stats
+├── secondary1/          # Secondary fuzzers
+├── secondary2/
+├── secondary3/
+└── ...
+```
+
+## Basic Setup
+
+### Main Instance
+
+Start one main instance per machine:
+
+```bash
+export AFL_FINAL_SYNC=1
+afl-fuzz -M main-$HOSTNAME -i seeds -o output -- ./target @@
+```
+
+<ParamField path="-M" type="string">
+Main fuzzer name. Use `main-$HOSTNAME` for multi-machine setups.
+</ParamField>
+
+<ParamField path="AFL_FINAL_SYNC" type="boolean">
+Perform final test case import when terminating. **Required for main instances**.
+</ParamField>
+
+### Secondary Instances
+
+Start secondary instances with unique names:
+
+<CodeGroup>
+
+```bash Secondary 1
+afl-fuzz -S secondary1 -i seeds -o output -- ./target @@
+```
+
+```bash Secondary 2
+afl-fuzz -S secondary2 -i seeds -o output -p fast -- ./target @@
+```
+
+```bash Secondary 3
+afl-fuzz -S secondary3 -i seeds -o output -p exploit -- ./target @@
+```
+
+</CodeGroup>
+
+<ParamField path="-S" type="string">
+Secondary fuzzer name. Must be unique across all instances.
+</ParamField>
+
+## Optimal Core Allocation
+
+AFL++ has diminishing returns beyond 32-64 cores per machine due to synchronization overhead.
+
+<Tip>
+**Sweet spot**: 32-64 cores per machine for most targets.
+</Tip>
+
+### Recommended Distribution
+
+For a **32-core machine**, distribute instances as follows:
+
+<Steps>
+
+<Step title="1 Main Instance">
+```bash
+export AFL_FINAL_SYNC=1
+afl-fuzz -M main-$HOSTNAME -i seeds -o output -- ./target @@
+```
+</Step>
+
+<Step title="1-2 CMPLOG Instances">
+```bash
+# At least one with -l 2AT
+afl-fuzz -S cmplog1 -i seeds -o output -c target.cmplog -l 2AT -- ./target @@
+afl-fuzz -S cmplog2 -i seeds -o output -c target.cmplog -l 2 -- ./target @@
+```
+</Step>
+
+<Step title="1 Sanitizer Instance">
+```bash
+afl-fuzz -S asan1 -i seeds -o output -- ./target.asan @@
+```
+</Step>
+
+<Step title="1-3 LAF-Intel/COMPCOV Instances">
+```bash
+afl-fuzz -S laf1 -i seeds -o output -- ./target.laf @@
+```
+
+<Warning>
+If running multiple LAF instances, the main (`-M`) should be one of them for proper syncing.
+</Warning>
+</Step>
+
+<Step title="~3 MOpt Instances (10%)">
+```bash
+afl-fuzz -S mopt1 -L 0 -i seeds -o output -- ./target @@
+afl-fuzz -S mopt2 -L 0 -i seeds -o output -- ./target @@
+afl-fuzz -S mopt3 -L 0 -i seeds -o output -- ./target @@
+```
+</Step>
+
+<Step title="Remaining: Standard Instances">
+Distribute different strategies:
+
+- **50-70%**: with `AFL_DISABLE_TRIM=1`
+- **10%**: old queue cycling (`-Z`)
+- **40%**: `-P explore`
+- **20%**: `-P exploit`
+- **Different power schedules**: `fast`, `coe`, `lin`, `quad`, `rare`
+- **30%**: with `-a` if not using by default
+
+```bash
+export AFL_DISABLE_TRIM=1
+afl-fuzz -S secondary1 -i seeds -o output -p fast -- ./target @@
+afl-fuzz -S secondary2 -i seeds -o output -p coe -- ./target @@
+afl-fuzz -S secondary3 -i seeds -o output -p lin -- ./target @@
+afl-fuzz -S secondary4 -i seeds -o output -p quad -- ./target @@
+afl-fuzz -S secondary5 -i seeds -o output -p exploit -P exploit -- ./target @@
+afl-fuzz -S secondary6 -i seeds -o output -p rare -- ./target @@
+afl-fuzz -S secondary7 -Z -i seeds -o output -- ./target @@
+# ... etc
+```
+</Step>
+
+</Steps>
+
+## Configuration Best Practices
+
+### Cache Test Cases
+
+With sufficient RAM, cache test cases for dramatic speed improvements:
+
+```bash
+export AFL_TESTCACHE_SIZE=200  # 200MB cache
+```
+
+<ParamField path="AFL_TESTCACHE_SIZE" type="integer (MB)" default="50">
+Recommended: 50-500MB depending on corpus size and RAM availability.
+</ParamField>
+
+### Use Ramdisk
+
+Reduce SSD wear and improve speed:
+
+```bash
+export AFL_TMPDIR=/dev/shm/afl
+mkdir -p $AFL_TMPDIR
+```
+
+### Enable Import First
+
+Load discoveries from other instances before starting:
+
+```bash
+export AFL_IMPORT_FIRST=1
+```
+
+<Note>
+This can slow initial startup with many instances/seeds. Skip for CI or fresh campaigns.
+</Note>
+
+### Large/Previous Corpus
+
+For resuming or CI with large corpus:
+
+```bash
+export AFL_CMPLOG_ONLY_NEW=1      # Only CMPLOG new findings
+export AFL_FAST_CAL=1             # Fast calibration
+```
+
+For CI with huge queues:
+
+```bash
+export AFL_NO_STARTUP_CALIBRATION=1  # Skip calibration entirely
+```
+
+<Warning>
+Only use `AFL_NO_STARTUP_CALIBRATION` if calibration phase would be too long for your fuzz run time.
+</Warning>
+
+### Ignore Problematic Seeds
+
+Skip crashing/timeout seeds on startup:
+
+```bash
+export AFL_IGNORE_SEED_PROBLEMS=1
+```
+
+## Strategy Distribution
+
+Diversify strategies across instances for maximum effectiveness:
+
+### Power Schedules
+
+Distribute all schedules:
+
+| Schedule | % of Instances | Purpose |
+|----------|----------------|----------|
+| `explore` | 30% | Default, balanced |
+| `fast` | 15% | Quick iterations |
+| `coe` | 10% | Recent discoveries |
+| `lin` | 10% | Linear favoritism |
+| `quad` | 10% | Quadratic favoritism |
+| `exploit` | 15% | Deep exploitation |
+| `rare` | 10% | Edge cases |
+
+```bash
+afl-fuzz -S exp1 -i seeds -o output -p explore -- ./target @@
+afl-fuzz -S fast1 -i seeds -o output -p fast -- ./target @@
+afl-fuzz -S coe1 -i seeds -o output -p coe -- ./target @@
+# ... etc
+```
+
+### Trimming
+
+**50-70%** of instances should skip trimming:
+
+```bash
+export AFL_DISABLE_TRIM=1
+afl-fuzz -S notrim1 -i seeds -o output -- ./target @@
+```
+
+### Queue Cycling
+
+**~10%** should use old queue cycling:
+
+```bash
+afl-fuzz -S oldq1 -Z -i seeds -o output -- ./target @@
+```
+
+### Input Format
+
+If not using `-a` by default:
+- **30%** with `-a ascii`
+- **30%** with `-a binary`
+- **40%** without `-a`
+
+If using `-a`:
+- **70%** with `-a`
+- **30%** without `-a`
+
+## Example: Complete 32-Core Setup
+
+<Accordion title="View complete script for 32 cores">
+
+```bash
+#!/bin/bash
+
+# Configuration
+TARGET="./target"
+TARGET_ASAN="./target.asan"
+TARGET_CMPLOG="./target.cmplog"
+TARGET_LAF="./target.laf"
+SEEDS="seeds"
+OUTPUT="output"
+
+# Environment
+export AFL_TESTCACHE_SIZE=200
+export AFL_TMPDIR=/dev/shm/afl
+export AFL_IMPORT_FIRST=1
+export AFL_SKIP_CPUFREQ=1
+mkdir -p $AFL_TMPDIR
+
+# Main instance
+AFL_FINAL_SYNC=1 afl-fuzz -M main-$(hostname) -i $SEEDS -o $OUTPUT -- $TARGET @@ &
+
+# CMPLOG instances (2)
+afl-fuzz -S cmplog1 -i $SEEDS -o $OUTPUT -c $TARGET_CMPLOG -l 2AT -- $TARGET @@ &
+afl-fuzz -S cmplog2 -i $SEEDS -o $OUTPUT -c $TARGET_CMPLOG -l 2 -- $TARGET @@ &
+
+# Sanitizer instance (1)
+afl-fuzz -S asan1 -i $SEEDS -o $OUTPUT -- $TARGET_ASAN @@ &
+
+# LAF-Intel instance (1)
+afl-fuzz -S laf1 -i $SEEDS -o $OUTPUT -- $TARGET_LAF @@ &
+
+# MOpt instances (3 = ~10%)
+afl-fuzz -S mopt1 -L 0 -i $SEEDS -o $OUTPUT -- $TARGET @@ &
+afl-fuzz -S mopt2 -L 0 -i $SEEDS -o $OUTPUT -- $TARGET @@ &
+afl-fuzz -S mopt3 -L 0 -i $SEEDS -o $OUTPUT -- $TARGET @@ &
+
+# Standard instances with various strategies (24 remaining)
+
+# With AFL_DISABLE_TRIM (~16 instances)
+export AFL_DISABLE_TRIM=1
+afl-fuzz -S std1 -i $SEEDS -o $OUTPUT -p fast -- $TARGET @@ &
+afl-fuzz -S std2 -i $SEEDS -o $OUTPUT -p coe -- $TARGET @@ &
+afl-fuzz -S std3 -i $SEEDS -o $OUTPUT -p lin -- $TARGET @@ &
+afl-fuzz -S std4 -i $SEEDS -o $OUTPUT -p quad -- $TARGET @@ &
+afl-fuzz -S std5 -i $SEEDS -o $OUTPUT -p exploit -P exploit -- $TARGET @@ &
+afl-fuzz -S std6 -i $SEEDS -o $OUTPUT -p rare -- $TARGET @@ &
+afl-fuzz -S std7 -i $SEEDS -o $OUTPUT -p explore -- $TARGET @@ &
+afl-fuzz -S std8 -i $SEEDS -o $OUTPUT -p fast -- $TARGET @@ &
+afl-fuzz -S std9 -i $SEEDS -o $OUTPUT -p coe -P explore -- $TARGET @@ &
+afl-fuzz -S std10 -i $SEEDS -o $OUTPUT -p lin -- $TARGET @@ &
+afl-fuzz -S std11 -i $SEEDS -o $OUTPUT -p quad -P exploit -- $TARGET @@ &
+afl-fuzz -S std12 -i $SEEDS -o $OUTPUT -p exploit -- $TARGET @@ &
+afl-fuzz -S std13 -i $SEEDS -o $OUTPUT -p rare -- $TARGET @@ &
+afl-fuzz -S std14 -i $SEEDS -o $OUTPUT -p explore -- $TARGET @@ &
+afl-fuzz -S std15 -i $SEEDS -o $OUTPUT -p fast -P explore -- $TARGET @@ &
+afl-fuzz -S std16 -i $SEEDS -o $OUTPUT -p coe -- $TARGET @@ &
+unset AFL_DISABLE_TRIM
+
+# Without AFL_DISABLE_TRIM (~5 instances)
+afl-fuzz -S trim1 -i $SEEDS -o $OUTPUT -p lin -- $TARGET @@ &
+afl-fuzz -S trim2 -i $SEEDS -o $OUTPUT -p quad -- $TARGET @@ &
+afl-fuzz -S trim3 -i $SEEDS -o $OUTPUT -p exploit -P exploit -- $TARGET @@ &
+afl-fuzz -S trim4 -i $SEEDS -o $OUTPUT -p rare -- $TARGET @@ &
+afl-fuzz -S trim5 -i $SEEDS -o $OUTPUT -p explore -- $TARGET @@ &
+
+# Old queue cycling (~3 instances)
+afl-fuzz -S oldq1 -Z -i $SEEDS -o $OUTPUT -- $TARGET @@ &
+afl-fuzz -S oldq2 -Z -i $SEEDS -o $OUTPUT -p fast -- $TARGET @@ &
+afl-fuzz -S oldq3 -Z -i $SEEDS -o $OUTPUT -p exploit -- $TARGET @@ &
+
+echo "All 32 instances started!"
+echo "Monitor with: afl-whatsup -s $OUTPUT"
+```
+
+</Accordion>
+
+## Multi-Machine Fuzzing
+
+Scale beyond a single machine by syncing between servers.
+
+### Setup
+
+<Steps>
+
+<Step title="Run fuzzing on each machine">
+Ensure each machine has **one unique** `-M` main instance:
+
+```bash
+# Machine 1
+AFL_FINAL_SYNC=1 afl-fuzz -M main-server1 -i seeds -o output -- ./target @@
+
+# Machine 2
+AFL_FINAL_SYNC=1 afl-fuzz -M main-server2 -i seeds -o output -- ./target @@
+```
+</Step>
+
+<Step title="Create server list">
+```bash servers.txt
+server1
+server2
+server3
+```
+</Step>
+
+<Step title="Sync between machines">
+Sync only main instances (they handle secondary sync):
+
+```bash
+for FROM in $(cat servers.txt); do
+  for TO in $(cat servers.txt); do
+    [[ "$FROM" == "$TO" ]] && continue
+    rsync -rlpogtz --rsh=ssh \
+      $FROM:/target/output/main-$FROM \
+      $TO:/target/output/
+  done
+done
+```
+</Step>
+
+</Steps>
+
+### Sync Strategies
+
+<AccordionGroup>
+
+<Accordion title="Never sync (Islands)">
+Each machine explores independently. May find different bugs but slower overall coverage.
+
+```bash
+# Don't run sync script at all
+```
+</Accordion>
+
+<Accordion title="Regular sync (every ~4 hours)">
+All campaigns see the same discoveries. Like one huge server.
+
+```bash
+# Cron job every 4 hours
+0 */4 * * * /path/to/sync_script.sh
+```
+</Accordion>
+
+<Accordion title="Interval sync (1/10th of campaign)">
+Balance individuality with knowledge sharing.
+
+```bash
+# For 10-day campaign: sync every 24 hours
+# For 24-hour campaign: sync every 2-3 hours
+```
+</Accordion>
+
+</AccordionGroup>
+
+### Advanced Sync Script
+
+Use [utils/distributed_fuzzing](https://github.com/AFLplusplus/AFLplusplus/tree/stable/utils/distributed_fuzzing) for more complex setups.
+
+## Monitoring
+
+### afl-whatsup
+
+View campaign status:
+
+```bash
+afl-whatsup output/
+```
+
+Summary only:
+
+```bash
+afl-whatsup -s output/
+```
+
+### afl-plot
+
+Generate performance graphs:
+
+```bash
+afl-plot output/main-hostname /var/www/html/graphs
+```
+
+### Watch Script
+
+Continuously monitor:
+
+```bash
+watch -n 60 'afl-whatsup -s output/'
+```
+
+## Stopping and Resuming
+
+### Stop All Instances
+
+```bash
+pkill -INT afl-fuzz
+```
+
+<Note>
+Use `SIGINT` (Ctrl+C / `kill -INT`) for clean shutdown, not `SIGKILL`.
+</Note>
+
+### Resume Campaign
+
+Use `-i -` or set `AFL_AUTORESUME`:
+
+```bash
+export AFL_AUTORESUME=1
+# Rerun the same commands as before
+afl-fuzz -M main-$(hostname) -i seeds -o output -- ./target @@
+afl-fuzz -S secondary1 -i seeds -o output -- ./target @@
+# ...
+```
+
+### Add New Seeds
+
+Run temporary instance with new seeds:
+
+```bash
+AFL_BENCH_JUST_ONE=1 AFL_FAST_CAL=1 afl-fuzz \
+  -i new_seeds -o output -S temp_import -- ./target @@
+```
+
+The main instance will pick them up and distribute to secondaries.
+
+## Mixing with Other Fuzzers
+
+### AFL-Compatible Fuzzers
+
+Use the same `-o` directory with unique `-S` names:
+
+- [AFLsmart](https://github.com/aflsmart/aflsmart)
+- [FairFuzz](https://github.com/carolemieux/afl-rb)
+- [Neuzz](https://github.com/Dongdongshe/neuzz)
+- [Eclipser](https://github.com/SoftSec-KAIST/Eclipser/)
+- [Fuzzolic](https://github.com/season-lab/fuzzolic)
+
+```bash
+# AFL++ instance
+afl-fuzz -M main -i seeds -o output -- ./target @@
+
+# AFLsmart instance
+aflsmart -S aflsmart1 -i seeds -o output -- ./target @@
+```
+
+### Non-AFL Fuzzers (honggfuzz, libfuzzer)
+
+Sync using `-F` flag on main instance:
+
+```bash
+# honggfuzz (separate directory)
+honggfuzz -n 2 -i seeds -W honggfuzz_output -- ./target ___FILE___
+
+# AFL++ main with sync
+afl-fuzz -M main -F honggfuzz_output -i seeds -o output -- ./target @@
+```
+
+<Tip>
+**Highly recommended**: Run honggfuzz (`-n 1` or `-n 2`) and libfuzzer (`-entropic=1`) in parallel!
+</Tip>
+
+## Performance Tuning
+
+### System Configuration
+
+Run before first fuzzing session:
+
+```bash
+sudo afl-system-config
+```
+
+For permanent boot optimizations:
+
+```bash
+sudo afl-persistent-config
+```
+
+<Warning>
+These improve fuzzing performance but reduce security. Use on dedicated fuzzing machines only.
+</Warning>
+
+### Docker Considerations
+
+Pass CPU cores explicitly:
+
+```bash
+docker run --cpuset-cpus="0-31" aflplusplus/aflplusplus
+```
+
+Or disable affinity:
+
+```bash
+export AFL_NO_AFFINITY=1
+```
+
+### CPU Binding
+
+AFL++ automatically binds to free cores. Override:
+
+<ParamField path="AFL_NO_AFFINITY" type="boolean">
+Disable CPU binding (allows more instances than cores).
+</ParamField>
+
+<ParamField path="AFL_TRY_AFFINITY" type="boolean">
+Try binding but don't fail if unavailable.
+</ParamField>
+
+## Troubleshooting
+
+<AccordionGroup>
+
+<Accordion title="Instances not syncing">
+Check:
+- All use same `-o` directory
+- Unique `-M` / `-S` names
+- `AFL_NO_SYNC` is not set
+- File permissions allow reading other instances' queues
+
+```bash
+ls -la output/*/queue/
+```
+</Accordion>
+
+<Accordion title="Slow performance with many instances">
+- Reduce to 32-64 cores per machine
+- Increase `AFL_SYNC_TIME` (default 20 minutes)
+- Use `AFL_TESTCACHE_SIZE`
+- Move output to ramdisk (`AFL_TMPDIR`)
+
+```bash
+export AFL_SYNC_TIME=30  # Sync every 30 minutes
+```
+</Accordion>
+
+<Accordion title="Out of memory">
+- Reduce `AFL_TESTCACHE_SIZE`
+- Run fewer sanitizer instances (they use most RAM)
+- Set memory limits with `-m`
+
+```bash
+afl-fuzz -m 512 -S asan1 -i seeds -o output -- ./target.asan @@
+```
+</Accordion>
+
+<Accordion title="Can't bind to CPU cores">
+Docker or virtualization blocking affinity:
+
+```bash
+export AFL_NO_AFFINITY=1
+```
+</Accordion>
+
+</AccordionGroup>
+
+## CI Fuzzing Notes
+
+For short CI runs, parallel fuzzing differs:
+
+<Warning>
+**Do NOT** use `-M` mode in CI. Run only `-S` secondaries.
+</Warning>
+
+```bash
+# CI: Use only secondaries
+afl-fuzz -S ci1 -i seeds -o output -- ./target @@
+afl-fuzz -S ci2 -i seeds -o output -p fast -- ./target @@
+```
+
+CI-specific settings:
+
+```bash
+export AFL_FAST_CAL=1
+export AFL_CMPLOG_ONLY_NEW=1
+export AFL_NO_STARTUP_CALIBRATION=1  # If queue is huge
+```
+
+## Related Topics
+
+<CardGroup cols={2}>
+
+<Card title="Power Schedules" icon="gauge-high" href="/advanced/power-schedules">
+Optimize fuzzing strategies
+</Card>
+
+<Card title="Environment Variables" icon="code" href="/advanced/environment-variables">
+Fine-tune AFL++ behavior
+</Card>
+
+<Card title="Custom Mutators" icon="puzzle-piece" href="/advanced/custom-mutators">
+Implement domain-specific mutations
+</Card>
+
+<Card title="Getting Started" icon="play" href="/guides/source-code-fuzzing">
+Basic fuzzing guide
+</Card>
+
+</CardGroup>

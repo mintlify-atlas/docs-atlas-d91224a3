@@ -1,0 +1,457 @@
+---
+title: "Persistent Mode"
+description: "Achieve 10-20x faster fuzzing by reusing a single process"
+---
+
+## Overview
+
+<Info>
+**Persistent mode is the most effective way to fuzz.** All professional fuzzing uses this mode.
+</Info>
+
+In persistent mode, AFL++ fuzzes a target multiple times in a single forked process instead of forking a new process for each execution. This typically provides **10-20x performance improvement** with no disadvantages.
+
+## Key Concept
+
+| Traditional Fuzzing | Persistent Mode |
+|---------------------|----------------|
+| Fork new process for each test | Reuse single process |
+| High OS overhead | Minimal overhead |
+| 1x baseline speed | **10-20x faster** |
+
+## Requirements
+
+For persistent mode to work correctly:
+
+1. **Target must be callable** as one or more functions
+2. **State must be resettable** between iterations
+3. **No resource leaks** across iterations
+4. **Earlier runs must not affect future runs**
+
+<Warning>
+Check the `stability` value in afl-fuzz UI. If it's lower in persistent mode vs. non-persistent mode, the target is retaining state.
+</Warning>
+
+## Quick Start (TL;DR)
+
+### Complete Example
+
+```c
+#include "what_you_need_for_your_target.h"
+
+__AFL_FUZZ_INIT();
+
+int main() {
+  // Initialization, command line parsing, etc.
+
+#ifdef __AFL_HAVE_MANUAL_CONTROL
+  __AFL_INIT();
+#endif
+
+  unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;  // Must be after __AFL_INIT
+                                                   // and before __AFL_LOOP!
+
+  while (__AFL_LOOP(10000)) {
+    int len = __AFL_FUZZ_TESTCASE_LEN;  // Don't use macro directly in call!
+
+    if (len < 8) continue;  // Check minimum input length
+
+    // Setup function call, e.g.:
+    // struct target *tmp = libtarget_init();
+    
+    // Call function to be fuzzed
+    target_function(buf, len);
+    
+    // Reset state, e.g.:
+    // libtarget_free(tmp);
+  }
+
+  return 0;
+}
+```
+
+### Compile and Run
+
+```bash
+afl-clang-fast -o fuzz_target fuzz_target.c -lwhat_you_need_for_your_target
+afl-fuzz -i input -o output -- ./fuzz_target
+```
+
+**Result**: 10-20x speed increase! 🚀
+
+## Standalone Compilation
+
+To compile the target without AFL++ (for testing):
+
+```c
+#ifndef __AFL_FUZZ_TESTCASE_LEN
+  ssize_t fuzz_len;
+  #define __AFL_FUZZ_TESTCASE_LEN fuzz_len
+  unsigned char fuzz_buf[1024000];
+  #define __AFL_FUZZ_TESTCASE_BUF fuzz_buf
+  #define __AFL_FUZZ_INIT() void sync(void);
+  #define __AFL_LOOP(x) ((fuzz_len = read(0, fuzz_buf, sizeof(fuzz_buf))) > 0 ? 1 : 0)
+  #define __AFL_INIT() sync()
+#endif
+```
+
+Add this after your includes, then compile with regular compiler:
+
+```bash
+gcc -o fuzz_target fuzz_target.c -lwhat_you_need_for_your_target
+echo "test input" | ./fuzz_target
+```
+
+## Deferred Initialization
+
+AFL++ normally stops execution before `main()` and clones from there. For programs with expensive initialization, you can defer the forkserver to start later.
+
+### When to Use
+
+Deferred initialization helps when your program:
+- Parses large configuration files
+- Performs time-consuming setup
+- Does expensive initialization before reading fuzzed input
+
+### Performance Gain
+
+Can offer **10x+ performance gain** for programs with slow initialization.
+
+### How to Implement
+
+1. **Find the right location** - must be done with extreme care to avoid breaking the binary
+
+<Warning>
+**DO NOT** place `__AFL_INIT()` after:
+- Creation of threads or child processes
+- `setitimer()` or timer initialization
+- Creation of temp files, network sockets, or shared-state resources
+- **Any access to fuzzed input** or its size
+</Warning>
+
+2. **Add the macro**:
+
+```c
+#ifdef __AFL_HAVE_MANUAL_CONTROL
+  __AFL_INIT();
+#endif
+
+// Fuzzing starts here
+```
+
+3. **Recompile**:
+
+```bash
+afl-clang-fast -o target target.c
+# or
+afl-clang-lto -o target target.c
+# or
+afl-gcc-fast -o target target.c
+```
+
+### Example
+
+```c
+#include "config_parser.h"
+#include "target.h"
+
+int main(int argc, char **argv) {
+  // Expensive initialization
+  parse_large_config_file("/etc/myapp/config.xml");  // Takes 500ms
+  initialize_database_connections();                  // Takes 200ms
+  load_machine_learning_models();                     // Takes 1000ms
+  
+  // Deferred forkserver starts HERE
+#ifdef __AFL_HAVE_MANUAL_CONTROL
+  __AFL_INIT();
+#endif
+  
+  // Now read and process fuzzed input
+  char *input = read_input_file(argv[1]);
+  process_input(input);
+  
+  return 0;
+}
+```
+
+## Persistent Mode
+
+### The Persistent Loop
+
+The core of persistent mode is the `__AFL_LOOP()` macro:
+
+```c
+while (__AFL_LOOP(1000)) {
+  /* Read input data */
+  /* Call library code to be fuzzed */
+  /* Reset state */
+}
+
+/* Exit normally */
+```
+
+### Loop Count Parameter
+
+The number in `__AFL_LOOP(1000)` controls:
+- **Maximum iterations** before AFL++ restarts the process
+- **Balance** between performance and stability
+- **1000 is a good starting point**
+
+<Note>
+Going much higher than 1000 increases the risk of issues from memory leaks without significant performance benefits.
+</Note>
+
+### Full Template
+
+See examples in [utils/persistent_mode](https://github.com/AFLplusplus/AFLplusplus/tree/stable/utils/persistent_mode).
+
+### Important Considerations
+
+<Warning>
+Persistent mode is **easy to misuse**:
+- Failure to fully reset state → false positives
+- Memory leaks → wasted CPU and crashes
+- Leaked file descriptors → resource exhaustion
+- Retained global state → non-deterministic behavior
+</Warning>
+
+### Inherent Path Variation
+
+Execution paths will vary slightly depending on whether the loop is entered for the first time or repeated. This is expected behavior.
+
+## Shared Memory Fuzzing
+
+For an additional **~2x speed multiplier**, receive fuzzing data via shared memory instead of stdin/files.
+
+### Setup
+
+**1. After includes, initialize:**
+
+```c
+__AFL_FUZZ_INIT();
+```
+
+**2. At start of main (after `__AFL_INIT()` if using deferred forkserver):**
+
+```c
+unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+```
+
+**3. As first line after `__AFL_LOOP`:**
+
+```c
+int len = __AFL_FUZZ_TESTCASE_LEN;
+```
+
+### Complete Example with Shared Memory
+
+```c
+#include "target.h"
+
+__AFL_FUZZ_INIT();
+
+int main() {
+  // Expensive initialization
+  initialize_target();
+
+#ifdef __AFL_HAVE_MANUAL_CONTROL
+  __AFL_INIT();
+#endif
+
+  unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+
+  while (__AFL_LOOP(10000)) {
+    int len = __AFL_FUZZ_TESTCASE_LEN;
+    
+    if (len < 1) continue;
+    
+    process_data(buf, len);
+    reset_state();
+  }
+
+  cleanup_target();
+  return 0;
+}
+```
+
+## Advanced: Persistent Record and Replay
+
+For stateful targets (e.g., network stacks) that need to keep state between iterations:
+
+### Environment Variables
+
+<ParamField path="AFL_PERSISTENT_RECORD" type="boolean">
+  Enable recording of persistent mode iterations.
+  
+  ```bash
+  export AFL_PERSISTENT_RECORD=1
+  ```
+  
+  See [Environment Variables documentation](/advanced/environment-variables).
+</ParamField>
+
+<ParamField path="AFL_PERSISTENT_REPLAY" type="integer">
+  Replay a specific record number.
+  
+  ```bash
+  export AFL_PERSISTENT_REPLAY=12345
+  ./fuzz_target
+  ```
+</ParamField>
+
+<ParamField path="AFL_PERSISTENT_DIR" type="path">
+  Directory containing record files (default: `./`).
+  
+  ```bash
+  export AFL_PERSISTENT_DIR=/tmp/records
+  ```
+</ParamField>
+
+### Using Record/Replay
+
+```bash
+# Enable recording during fuzzing
+export AFL_PERSISTENT_RECORD=1
+afl-fuzz -i input -o output -- ./target
+
+# Replay a specific crash (RECORD:00123)
+export AFL_PERSISTENT_REPLAY=00123
+export AFL_PERSISTENT_DIR=./output/default/crashes
+./target
+```
+
+### Argument Parsing Support
+
+For harnesses using `@@` argument:
+
+1. Enable in `config.h`:
+   ```c
+   #define AFL_PERSISTENT_ARGPARSE 1
+   ```
+
+2. Rebuild AFL++:
+   ```bash
+   make clean all
+   ```
+
+<Note>
+Not all systems support passing arguments to initializers. Prefer using `__AFL_FUZZ_TESTCASE_BUF`/`__AFL_FUZZ_TESTCASE_LEN` shared memory mechanism.
+</Note>
+
+## Drop-in Persistent Loop Replay
+
+To use replay functionality without `afl-cc`:
+
+```c
+#ifndef __AFL_FUZZ_TESTCASE_LEN
+  // Uncomment if using @@ argument
+  // #define AFL_PERSISTENT_REPLAY_ARGPARSE
+  #include "afl-record-compat.h"
+#endif
+
+__AFL_FUZZ_INIT();
+
+int main() {
+  // Your persistent loop code
+}
+```
+
+Example: [persistent_demo_replay.c](https://github.com/AFLplusplus/AFLplusplus/blob/stable/utils/replay_record/persistent_demo_replay.c)
+
+<Warning>
+Include `afl-record-compat.h` in **only one compilation unit** to avoid symbol conflicts.
+</Warning>
+
+## Performance Comparison
+
+| Mode | Speed | Use Case |
+|------|-------|----------|
+| Traditional | 1x | Baseline |
+| + Deferred init | 2-10x | Expensive initialization |
+| + Persistent mode | 10-20x | Most targets |
+| + Shared memory | 20-40x | Maximum performance |
+
+## Best Practices
+
+<Accordion title="State Reset Checklist">
+  - [ ] Free all allocated memory
+  - [ ] Close all file descriptors
+  - [ ] Reset global variables
+  - [ ] Clear caches and buffers
+  - [ ] Reset parser state machines
+  - [ ] Disconnect network connections
+  - [ ] Clear error states
+</Accordion>
+
+<Accordion title="Testing Your Implementation">
+  ```bash
+  # Test stability
+  afl-fuzz -i input -o output -- ./target
+  
+  # Check stability value in UI
+  # Should be >95%, ideally 100%
+  
+  # Compare with non-persistent mode
+  afl-fuzz -i input -o output -- ./target_no_persistent
+  ```
+</Accordion>
+
+<Accordion title="Debugging Low Stability">
+  If stability is low:
+  
+  1. Check for memory leaks:
+     ```bash
+     valgrind --leak-check=full ./target < testcase
+     ```
+  
+  2. Check for uninitialized memory:
+     ```bash
+     valgrind --track-origins=yes ./target < testcase
+     ```
+  
+  3. Add more thorough state reset
+  
+  4. Reduce loop count: `__AFL_LOOP(100)` instead of `__AFL_LOOP(1000)`
+</Accordion>
+
+## Examples
+
+Complete examples available in:
+- [utils/persistent_mode/](https://github.com/AFLplusplus/AFLplusplus/tree/stable/utils/persistent_mode)
+- [utils/replay_record/](https://github.com/AFLplusplus/AFLplusplus/tree/stable/utils/replay_record)
+
+## Compatibility
+
+Persistent mode works with:
+
+| Compiler Wrapper | Supported |
+|------------------|----------|
+| afl-clang-fast | ✅ Yes |
+| afl-clang-lto | ✅ Yes |
+| afl-gcc-fast | ✅ Yes |
+| afl-gcc (obsolete) | ❌ No |
+| afl-clang (obsolete) | ❌ No |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="CmpLog" icon="code-compare" href="/instrumentation/cmplog">
+    Add Redqueen-style mutations for even better results
+  </Card>
+  <Card title="LTO Mode" icon="link" href="/instrumentation/lto-mode">
+    Combine with collision-free instrumentation
+  </Card>
+  <Card title="LAF-Intel" icon="split" href="/instrumentation/laf-intel">
+    Split complex comparisons for better coverage
+  </Card>
+  <Card title="Environment Variables" icon="sliders" href="/advanced/environment-variables">
+    Configure persistent mode behavior
+  </Card>
+</CardGroup>
+
+## Related Documentation
+
+- [LLVM Mode](/instrumentation/llvm-mode)
+- [LTO Mode](/instrumentation/lto-mode)
+- [GCC Plugin](/instrumentation/gcc-plugin)
+- [Environment Variables](/advanced/environment-variables)

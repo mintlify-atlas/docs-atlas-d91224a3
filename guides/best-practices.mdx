@@ -1,0 +1,741 @@
+---
+title: Best Practices
+description: Expert tips, common pitfalls, and optimization techniques for AFL++ fuzzing
+---
+
+This guide covers battle-tested strategies, performance optimizations, and solutions to common fuzzing challenges.
+
+## Performance Optimization
+
+### Maximum Speed Configuration
+
+Follow these steps in order for the best fuzzing performance:
+
+<Steps>
+  <Step title="Use LTO Mode Instrumentation">
+    ```bash
+    export CC=afl-clang-lto
+    export CXX=afl-clang-lto++
+    export AR=llvm-ar
+    export RANLIB=llvm-ranlib
+    
+    ./configure --disable-shared
+    make
+    ```
+    
+    LTO provides the best instrumentation quality and performance.
+  </Step>
+  
+  <Step title="Enable Persistent Mode">
+    Rewrite your harness to use persistent mode:
+    
+    ```c
+    __AFL_FUZZ_INIT();
+    
+    int main() {
+      setup();
+      __AFL_INIT();
+      
+      unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+      
+      while (__AFL_LOOP(10000)) {
+        int len = __AFL_FUZZ_TESTCASE_LEN;
+        fuzz_target(buf, len);
+      }
+    }
+    ```
+    
+    This provides **2-20x speed increase**. See [Persistent Mode](/instrumentation/persistent-mode).
+  </Step>
+  
+  <Step title="Use tmpfs for AFL_TMPDIR">
+    ```bash
+    export AFL_TMPDIR=/dev/shm
+    ```
+    
+    Reduces disk I/O and wear on SSDs.
+  </Step>
+  
+  <Step title="Disable CPU Mitigations">
+    ```bash
+    sudo afl-persistent-config
+    ```
+    
+    Or manually edit `/etc/default/grub`:
+    
+    ```
+    GRUB_CMDLINE_LINUX_DEFAULT="ibpb=off ibrs=off kpti=off l1tf=off mds=off mitigations=off no_stf_barrier noibpb noibrs nopcid nopti nospec_store_bypass_disable nospectre_v1 nospectre_v2 pcid=off pti=off spec_store_bypass_disable=off spectre_v2=off stf_barrier=off"
+    ```
+    
+    Then `sudo update-grub && sudo reboot`.
+    
+    <Warning>This reduces system security. Only use on dedicated fuzzing machines.</Warning>
+  </Step>
+  
+  <Step title="Use ext2 with noatime">
+    ```bash
+    sudo mkfs.ext2 /dev/sdX
+    sudo mount -o noatime /dev/sdX /mnt/fuzzing
+    ```
+    
+    ext2 is faster than journaling filesystems for fuzzing workloads.
+  </Step>
+  
+  <Step title="Run System Configuration">
+    ```bash
+    sudo afl-system-config
+    ```
+    
+    Run this before each fuzzing session for optimal system settings.
+  </Step>
+</Steps>
+
+### Selective Instrumentation
+
+Instrument only the code you care about for significant speedups:
+
+```bash
+# Create allowlist
+cat > allowlist.txt << EOF
+parser.c
+decoder.c
+fun: process_input
+fun: parse_header
+EOF
+
+export AFL_LLVM_ALLOWLIST=allowlist.txt
+afl-clang-fast -o target target.c
+```
+
+Or use a denylist to exclude slow/irrelevant code:
+
+```bash
+# Create denylist
+cat > denylist.txt << EOF
+logging.c
+debug.c
+fun: print_stats
+fun: hash_table_resize
+EOF
+
+export AFL_LLVM_DENYLIST=denylist.txt
+afl-clang-fast -o target target.c
+```
+
+See [Selective Instrumentation](/instrumentation/llvm-mode#selective-instrumentation) for details.
+
+## Stability Optimization
+
+### Understanding Stability
+
+AFL++ reports stability as the percentage of consistent edge coverage across runs.
+
+**Good stability:** 90-100% → Fuzzing efficiently  
+**Poor stability:** &lt;90% → Losing coverage, slower progress
+
+### Identifying Unstable Edges
+
+<Steps>
+  <Step title="Enable Debug Output">
+    ```bash
+    export AFL_DEBUG=1
+    afl-fuzz -i input -o output -- ./target @@
+    ```
+    
+    After a few minutes, check `output/fuzzer_stats` for `var_bytes` - these are unstable edge IDs.
+  </Step>
+  
+  <Step title="Document Edge IDs">
+    For LTO mode:
+    
+    ```bash
+    export AFL_LLVM_DOCUMENT_IDS=/tmp/edge_ids.txt
+    afl-clang-lto -o target target.c
+    ```
+    
+    This creates a file mapping edge IDs to functions.
+    
+    For PCGUARD mode, modify `instrumentation/afl-llvm-rt.o.c` to log backtraces for specific edge IDs.
+  </Step>
+  
+  <Step title="Identify Problematic Functions">
+    Match unstable edge IDs from `var_bytes` to functions in your documentation.
+    
+    Common culprits:
+    - Hash table resizing
+    - Random number generation
+    - Timestamp checks
+    - Jitter/timing code
+    - Thread synchronization
+  </Step>
+  
+  <Step title="Exclude from Instrumentation">
+    ```bash
+    cat > denylist.txt << EOF
+    hash_map.c
+    fun: get_random
+    fun: check_timestamp
+    EOF
+    
+    export AFL_LLVM_DENYLIST=denylist.txt
+    afl-clang-fast -o target target.c
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+**Only exclude functions that don't process fuzz data.** If a function handles input (even indirectly), keep it instrumented despite instability.
+</Warning>
+
+### Persistent Mode Stability
+
+If persistent mode is unstable but non-persistent mode is stable:
+
+```c
+// The target is keeping internal state!
+// BAD:
+static int call_count = 0;  // Persists across iterations
+
+void process(uint8_t *data, size_t len) {
+  call_count++;  // State pollution
+  // ...
+}
+
+// GOOD:
+void process(uint8_t *data, size_t len) {
+  int call_count = 0;  // Reset each time
+  // ...
+}
+```
+
+**Solution:** Reset all state between iterations or disable persistent mode.
+
+## Multi-Instance Strategy
+
+### Optimal Instance Distribution
+
+For an 8-core machine:
+
+```bash
+export AFL_TESTCACHE_SIZE=100
+export AFL_FINAL_SYNC=1
+
+# Main instance (1 core)
+afl-fuzz -M main-$HOSTNAME -i input -o output -- ./target @@
+
+# CMPLOG instance (1 core)
+afl-fuzz -S cmplog -c ./target-cmplog -l 2AT -i input -o output -- ./target @@
+
+# Sanitizer instance (1 core)
+AFL_USE_ASAN=1 AFL_USE_UBSAN=1 afl-fuzz -S asan -m none -i input -o output -- ./target-asan @@
+
+# Secondary instances (5 cores)
+afl-fuzz -S explore1 -p explore -P explore -i input -o output -- ./target @@
+afl-fuzz -S fast1 -p fast -i input -o output -- ./target @@
+afl-fuzz -S exploit1 -p exploit -P exploit -i input -o output -- ./target @@
+AFL_DISABLE_TRIM=1 afl-fuzz -S notrim1 -p coe -i input -o output -- ./target @@
+afl-fuzz -S mopt1 -L 0 -i input -o output -- ./target @@
+```
+
+### Advanced Distribution (16+ cores)
+
+**Instance type percentages:**
+
+- 1 main instance with `AFL_FINAL_SYNC=1`
+- 1-2 CMPLOG instances (`-l 2AT` or `-l 2`)
+- 1-2 sanitizer instances (ASAN+UBSAN, MSAN)
+- 10% MOpt mutator (`-L 0`)
+- 10% old queue cycling (`-Z`)
+- 50-70% with trim disabled (`AFL_DISABLE_TRIM=1`)
+- 40% explore power schedule (`-p explore -P explore`)
+- 20% exploit power schedule (`-p exploit -P exploit`)
+- Remaining: mix of `fast`, `coe`, `lin`, `quad`, `rare` schedules
+
+**Example script for 32 cores:**
+
+```bash
+#!/bin/bash
+
+export AFL_TESTCACHE_SIZE=200
+export AFL_FINAL_SYNC=1
+
+# Main (1)
+screen -dmS main -- afl-fuzz -M main-$HOSTNAME -i input -o output -- ./target @@
+
+# CMPLOG (2)
+screen -dmS cmplog1 -- afl-fuzz -S cmplog1 -c ./target-cmplog -l 2AT -i input -o output -- ./target @@
+screen -dmS cmplog2 -- afl-fuzz -S cmplog2 -c ./target-cmplog -l 2 -i input -o output -- ./target @@
+
+# Sanitizers (2)
+screen -dmS asan -- afl-fuzz -S asan -m none -i input -o output -- ./target-asan @@
+screen -dmS msan -- afl-fuzz -S msan -m none -i input -o output -- ./target-msan @@
+
+# MOpt (3)
+for i in {1..3}; do
+  screen -dmS mopt$i -- afl-fuzz -S mopt$i -L 0 -i input -o output -- ./target @@
+done
+
+# Old queue (3)
+for i in {1..3}; do
+  screen -dmS old$i -- afl-fuzz -S old$i -Z -i input -o output -- ./target @@
+done
+
+# No trim (12)
+export AFL_DISABLE_TRIM=1
+for i in {1..12}; do
+  SCHED=(explore fast coe lin quad exploit rare)
+  S=${SCHED[$((i % 7))]}
+  screen -dmS notrim$i -- afl-fuzz -S notrim$i -p $S -i input -o output -- ./target @@
+done
+unset AFL_DISABLE_TRIM
+
+# Regular (9)
+for i in {1..9}; do
+  SCHED=(explore explore explore fast fast coe exploit exploit rare)
+  S=${SCHED[$((i - 1))]}
+  screen -dmS sec$i -- afl-fuzz -S sec$i -p $S -i input -o output -- ./target @@
+done
+```
+
+## Corpus Management
+
+### Initial Corpus Preparation
+
+```bash
+# 1. Collect diverse inputs
+mkdir -p corpus_raw
+# ... gather files from tests, examples, bug reports ...
+
+# 2. Remove duplicates
+afl-cmin -i corpus_raw -o corpus_unique -- ./target @@
+
+# 3. Minimize individual files (optional but recommended)
+mkdir corpus_minimized
+cd corpus_unique
+for f in *; do
+  afl-tmin -i "$f" -o "../corpus_minimized/$f" -- ../target @@
+done
+
+# 4. Use minimized corpus
+afl-fuzz -i corpus_minimized -o output -- ./target @@
+```
+
+### Adding Seeds Mid-Campaign
+
+```bash
+# Add new interesting seeds without stopping fuzzing
+AFL_BENCH_JUST_ONE=1 AFL_FAST_CAL=1 \
+  afl-fuzz -i new_seeds -o output -S inject-seeds -- ./target @@
+
+# Let it run for a few minutes, then Ctrl+C
+# The main fuzzer will sync and distribute findings
+```
+
+### Corpus Minimization During Fuzzing
+
+```bash
+# Periodically minimize the queue
+afl-cmin -i output/main-*/queue -o queue_minimized -- ./target @@
+
+# Replace queue (DANGEROUS - backup first!)
+cp -r output/main-*/queue output/main-*/queue.backup
+rm output/main-*/queue/*
+cp queue_minimized/* output/main-*/queue/
+```
+
+<Warning>
+Only minimize the queue if it becomes extremely large (&gt;100,000 files) and fuzzing slows down significantly.
+</Warning>
+
+## Dealing with Checksums and Validation
+
+### Removing Checksums from Source
+
+Many file formats use checksums that prevent fuzzing:
+
+```c
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+  // Skip checksum validation
+  return 1;  // Pretend checksum is valid
+#else
+  // Normal checksum verification
+  return verify_crc32(data, len, expected_crc);
+#endif
+```
+
+All AFL++ compilers automatically define `FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION`.
+
+### Using Custom Mutators for Post-Processing
+
+If you can't modify source, use a custom mutator to fix checksums:
+
+```c
+// custom_mutator.c
+size_t afl_custom_post_process(void *data, unsigned char *buf, 
+                               size_t buf_size, unsigned char **out_buf) {
+  // Recalculate and fix checksum
+  uint32_t crc = calculate_crc32(buf, buf_size - 4);
+  memcpy(buf + buf_size - 4, &crc, 4);
+  
+  *out_buf = buf;
+  return buf_size;
+}
+```
+
+Compile and use:
+
+```bash
+afl-clang-fast -shared -o mutator.so custom_mutator.c
+export AFL_CUSTOM_MUTATOR_LIBRARY=./mutator.so
+afl-fuzz -i input -o output -- ./target @@
+```
+
+See [Custom Mutators](/advanced/custom-mutators) for complete guide.
+
+## Handling Special Target Types
+
+### dlopen() Instrumented Libraries
+
+If your target loads instrumented libraries with `dlopen()` after the forkserver starts:
+
+```bash
+# Preload all libraries
+export AFL_PRELOAD=lib1.so:lib2.so:lib3.so
+afl-fuzz -i input -o output -- ./target @@
+```
+
+This ensures all instrumentation is present from the start.
+
+<Warning>
+PCGUARD and LTO instrumentation will `abort()` if dlopen()'ed libraries aren't preloaded. Use `AFL_PRELOAD` or switch to CLASSIC instrumentation.
+</Warning>
+
+### Fuzzing Network Services
+
+See dedicated [Network Services Fuzzing Guide](/guides/network-services).
+
+**Quick tips:**
+- Modify source to read from files/stdin (best)
+- Use socket emulation libraries (AFL_PRELOAD=libaflppdesock.so)
+- Use AFLNet for stateful protocols
+
+### Fuzzing GUI Programs
+
+See dedicated [GUI Fuzzing Guide](/guides/gui-programs).
+
+**Quick tips:**
+- Extract and fuzz core logic without GUI
+- Use Xvfb for headless execution
+- Create harnesses that bypass UI entirely
+
+### Fuzzing Binary-Only Targets
+
+See dedicated [Binary-Only Fuzzing Guide](/guides/binary-only-fuzzing).
+
+**Quick tips:**
+- Try ZAFL binary rewriter first (90-95% speed)
+- Use QEMU/FRIDA persistent mode (3-8x faster than basic mode)
+- Set AFL_ENTRYPOINT to skip initialization
+
+## Memory and Timeout Configuration
+
+### Setting Memory Limits
+
+```bash
+# Set 512MB limit
+afl-fuzz -m 512 -i input -o output -- ./target @@
+
+# No limit (for sanitizer builds)
+afl-fuzz -m none -i input -o output -- ./target-asan @@
+```
+
+<Tip>
+Set `-m` to 2-4x the maximum memory your seeds use. This helps detect missing malloc() failure handling.
+</Tip>
+
+### Setting Timeouts
+
+```bash
+# 1 second timeout
+afl-fuzz -t 1000 -i input -o output -- ./target @@
+
+# Aggressive timeout for fast targets
+afl-fuzz -t 5 -i input -o output -- ./target @@
+```
+
+Lower timeouts make fuzzing faster by skipping slow inputs:
+
+- Fast targets (&gt;5000 exec/s): `-t 5` to `-t 20`
+- Medium targets (1000-5000 exec/s): `-t 50` to `-t 200`
+- Slow targets (&lt;1000 exec/s): `-t 1000+`
+
+## CI/CD Fuzzing
+
+Short fuzzing runs in continuous integration require different configuration:
+
+```bash
+#!/bin/bash
+# CI fuzzing script (10-minute runs)
+
+# Fast compilation
+export CC=afl-clang-fast  # NOT afl-clang-lto (too slow to compile)
+export CXX=afl-clang-fast++
+
+# Randomize features (30% CMPLOG, 5% LAF)
+if [ $((RANDOM % 10)) -lt 3 ]; then
+  export AFL_LLVM_CMPLOG=1
+elif [ $((RANDOM % 20)) -eq 0 ]; then
+  export AFL_LLVM_LAF_ALL=1
+fi
+
+./configure && make
+
+# Fast calibration
+export AFL_FAST_CAL=1
+export AFL_CMPLOG_ONLY_NEW=1
+
+# Randomize runtime options
+OPTS="-i input -o output"
+
+# 65% disable trim
+[ $((RANDOM % 100)) -lt 65 ] && export AFL_DISABLE_TRIM=1
+
+# 50% keep timeouts
+[ $((RANDOM % 2)) -eq 0 ] && export AFL_KEEP_TIMEOUTS=1
+
+# 40% expand havoc
+[ $((RANDOM % 10)) -lt 4 ] && export AFL_EXPAND_HAVOC_NOW=1
+
+# 10% MOpt
+[ $((RANDOM % 10)) -eq 0 ] && OPTS="$OPTS -L 0"
+
+# 20% old queue
+[ $((RANDOM % 5)) -eq 0 ] && OPTS="$OPTS -Z"
+
+# Run as secondary fuzzer (no -M)
+timeout 600 afl-fuzz -S ci-$CI_JOB_ID $OPTS -- ./target @@
+
+# Check for crashes
+if [ -n "$(ls output/*/crashes/id:* 2>/dev/null)" ]; then
+  echo "CRASHES FOUND!"
+  exit 1
+fi
+```
+
+**Key CI differences:**
+
+- Use `afl-clang-fast` (fast compile) instead of `afl-clang-lto`
+- Set `AFL_FAST_CAL=1` and `AFL_CMPLOG_ONLY_NEW=1`
+- Reuse corpus from previous runs with `afl-cmin`
+- Only use `-S` instances (no `-M`)
+- Randomize instrumentation and runtime options
+
+## Distributed Fuzzing
+
+### Syncing Across Machines
+
+Sync findings between multiple servers:
+
+```bash
+#!/bin/bash
+# sync_fuzzers.sh - Run every 4 hours
+
+SERVERS=("server1" "server2" "server3")
+PROJECT="target"
+OUT_DIR="/fuzzing/$PROJECT/output"
+
+for SRC in "${SERVERS[@]}"; do
+  for DST in "${SERVERS[@]}"; do
+    [ "$SRC" = "$DST" ] && continue
+    
+    # Sync main instance queue
+    rsync -az --delete \
+      $SRC:$OUT_DIR/main-$SRC/queue/ \
+      $DST:$OUT_DIR/main-$SRC/queue/
+  done
+done
+```
+
+Run via cron:
+
+```bash
+0 */4 * * * /path/to/sync_fuzzers.sh
+```
+
+See [utils/distributed_fuzzing](https://github.com/AFLplusplus/AFLplusplus/tree/stable/utils/distributed_fuzzing) for advanced scripts.
+
+## Monitoring and Debugging
+
+### Check Fuzzing Status
+
+```bash
+# Detailed status
+afl-whatsup output/
+
+# Summary only
+afl-whatsup -s output/
+
+# Generate plots
+afl-plot output/main-hostname /var/www/html/plot
+```
+
+### Check Coverage
+
+```bash
+# Quick coverage check
+afl-showmap -C -i output/main-*/queue -o /dev/null -- ./target @@
+
+# Detailed line coverage
+git clone https://github.com/vanhauser-thc/afl-cov
+cd afl-cov
+./afl-cov -d ../output --live --coverage-cmd "../target @@" --code-dir /path/to/source
+```
+
+### Debug Crashes
+
+```bash
+# Reproduce crash
+./target output/main-*/crashes/id:000000*
+
+# With GDB
+gdb --args ./target output/main-*/crashes/id:000000*
+
+# With ASAN
+ASAN_OPTIONS=symbolize=1:abort_on_error=1 ./target-asan output/main-*/crashes/id:000000*
+
+# Minimize crash
+afl-tmin -i output/main-*/crashes/id:000000* -o crash.min -- ./target @@
+
+# Explore crash variants
+afl-fuzz -C -i output/main-*/crashes -o crash_exploration -- ./target @@
+```
+
+### Cluster Crashes with CASR
+
+```bash
+pip3 install casr
+casr-afl -i output -o casr_reports
+
+# View report
+cat casr_reports/clustered/cl1/casr-report-*.casrep
+```
+
+## Common Pitfalls and Solutions
+
+### "No instrumentation detected"
+
+```bash
+# Check if binary is instrumented
+afl-showmap -o /dev/null -- ./target < input/seed
+
+# Should show: "Captured X tuples"
+# If 0 tuples, recompile with AFL++ compiler
+```
+
+### "Suboptimal CPU scaling governor"
+
+```bash
+sudo afl-system-config
+# Or manually:
+sudo cpupower frequency-set -g performance
+```
+
+### "Configured MAX_MAP_SIZE too small"
+
+```bash
+# Recompile AFL++ with larger map
+export AFL_MAP_SIZE=10000000
+make clean all
+```
+
+### Fuzzing stops finding new paths
+
+```bash
+# 1. Check coverage
+afl-showmap -C -i output/main-*/queue -o /dev/null -- ./target @@
+
+# 2. If coverage is low, add better seeds
+# 3. Try different mutators
+# 4. Enable CMPLOG if not already
+# 5. Consider switching to different fuzzer (libFuzzer, honggfuzz)
+```
+
+### Very low stability (&lt;70%)
+
+See [Stability Optimization](#stability-optimization) section above.
+
+### Crashes don't reproduce
+
+```bash
+# 1. Check memory limits
+./target < output/main-*/crashes/id:000000*
+# vs
+afl-fuzz -m 512 ... (with same limit)
+
+# 2. Check if persistent mode state pollution
+# Recompile without persistent mode and test
+
+# 3. Enable crash recording (slow!)
+export AFL_ALLOW_CORES=1
+afl-fuzz ...
+
+# Crashes will generate core dumps
+gdb ./target core
+```
+
+## Advanced Techniques
+
+### Using AFL++ with libFuzzer Corpus
+
+```bash
+# Minimize libfuzzer corpus
+afl-cmin -i libfuzzer_corpus -o afl_input -- ./target @@
+
+# Fuzz with AFL++
+afl-fuzz -i afl_input -o output -- ./target @@
+
+# Sync back to libfuzzer
+cp output/main-*/queue/* libfuzzer_corpus/
+```
+
+### Parallel Fuzzing with honggfuzz
+
+```bash
+# Terminal 1: AFL++
+afl-fuzz -M afl-main -i input -o shared_output -- ./target @@
+
+# Terminal 2: honggfuzz
+honggfuzz -i input -W shared_output -n 1 -- ./target ___FILE___
+
+# They will sync automatically
+```
+
+### Differential Fuzzing
+
+```c
+// Compare two implementations
+__AFL_FUZZ_INIT();
+
+int main() {
+  __AFL_INIT();
+  unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+  
+  while (__AFL_LOOP(10000)) {
+    int len = __AFL_FUZZ_TESTCASE_LEN;
+    
+    int result1 = impl1_parse(buf, len);
+    int result2 = impl2_parse(buf, len);
+    
+    if (result1 != result2) {
+      abort();  // Difference found!
+    }
+  }
+}
+```
+
+## Next Steps
+
+- Explore [Source Code Fuzzing](/guides/source-code-fuzzing) for detailed workflows
+- Learn [Binary-Only Fuzzing](/guides/binary-only-fuzzing) techniques
+- Review [Instrumentation Modes](/concepts/instrumentation) for all options
+- Check [Environment Variables](/advanced/environment-variables) for all AFL++ settings

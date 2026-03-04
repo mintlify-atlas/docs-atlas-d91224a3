@@ -1,0 +1,377 @@
+---
+title: afl-showmap
+description: Coverage analysis tool that displays execution traces from instrumented programs
+---
+
+The `afl-showmap` utility displays raw tuple (edge coverage) data captured by AFL++ instrumentation. It's useful for analyzing coverage, eliminating redundant inputs, and understanding program behavior.
+
+## Synopsis
+
+```bash
+afl-showmap -o output_file [options] -- /path/to/target [target_args]
+```
+
+## Description
+
+`afl-showmap` runs the target program once with a given input and outputs the coverage map showing which edges (transitions between basic blocks) were executed. Each edge is represented as a tuple with its hit count.
+
+## Required Parameters
+
+<ParamField path="-o" type="path" required>
+  File to write the trace data to. Use `-o -` for stdout. Not required with `-S` streaming mode.
+  
+  ```bash
+  afl-showmap -o coverage.txt -- ./target input.dat
+  ```
+</ParamField>
+
+## Execution Control
+
+<ParamField path="-t" type="number">
+  Timeout for each run in milliseconds (default: 1000ms).
+  
+  ```bash
+  afl-showmap -o trace.txt -t 5000 -- ./slow_target
+  ```
+</ParamField>
+
+<ParamField path="-m" type="number">
+  Memory limit for child process in megabytes (default: none).
+  
+  ```bash
+  afl-showmap -o trace.txt -m 512 -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-Q" type="boolean">
+  Use QEMU mode for binary-only targets (Linux only).
+  
+  ```bash
+  afl-showmap -o trace.txt -Q -- ./binary_target
+  ```
+</ParamField>
+
+<ParamField path="-O" type="boolean">
+  Use FRIDA mode for binary-only instrumentation.
+</ParamField>
+
+<ParamField path="-U" type="boolean">
+  Use Unicorn mode (Linux only).
+</ParamField>
+
+## Input/Output Settings
+
+<ParamField path="-f" type="path">
+  Input file read by the tested program. If not specified, input is read from stdin.
+  
+  ```bash
+  afl-showmap -o trace.txt -f input.dat -- ./target /dev/stdin
+  ```
+</ParamField>
+
+<ParamField path="-i" type="path">
+  Process all files in this directory. Must be combined with `-o` (output directory).
+  
+  ```bash
+  afl-showmap -i corpus/ -o traces_dir/ -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-I" type="path">
+  Process files listed in this file (one path per line).
+  
+  ```bash
+  # Create file list
+  find corpus/ -type f > files.txt
+  
+  # Process all listed files
+  afl-showmap -I files.txt -o traces_dir/ -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-S" type="boolean">
+  Streaming mode: read test cases from stdin, write coverage to stdout using a length-value protocol.
+  
+  Protocol format:
+  - Input: `[u32 len][data]`
+  - Output: `[u16 status][u32 edges][(u32,u8)*][u32 stdout_len][stdout_data*][u32 stderr_len][stderr_data*]`
+  
+  ```bash
+  afl-showmap -S -- ./target < inputs.stream > coverage.stream
+  ```
+</ParamField>
+
+## Analysis Options
+
+<ParamField path="-C" type="boolean">
+  Collect coverage mode. Writes all unique edges to output file and gives a summary. Must be combined with `-i`.
+  
+  ```bash
+  afl-showmap -C -i corpus/ -o total_coverage.txt -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-e" type="boolean">
+  Show edge coverage only, ignore hit counts. Maps all non-zero values to 1.
+  
+  ```bash
+  afl-showmap -o trace.txt -e -- ./target input.dat
+  ```
+</ParamField>
+
+<ParamField path="-r" type="boolean">
+  Show real tuple values instead of AFL bucketing. Normally, hit counts are classified into buckets (1, 2, 3, 4-7, 8-15, etc.).
+  
+  ```bash
+  afl-showmap -o trace.txt -r -- ./target input.dat
+  ```
+</ParamField>
+
+<ParamField path="-s" type="boolean">
+  Do not classify the map (no bucketing).
+  
+  ```bash
+  afl-showmap -o trace.txt -s -- ./target input.dat
+  ```
+</ParamField>
+
+<ParamField path="-q" type="boolean">
+  Quiet mode - suppress program output and messages.
+  
+  ```bash
+  afl-showmap -o trace.txt -q -- ./target input.dat
+  ```
+</ParamField>
+
+<ParamField path="-c" type="boolean">
+  Allow core dumps.
+  
+  ```bash
+  afl-showmap -o trace.txt -c -- ./target crash.dat
+  ```
+</ParamField>
+
+## Examples
+
+### Basic Coverage Analysis
+
+```bash
+# Analyze single input
+echo "test input" | afl-showmap -o coverage.txt -- ./target
+
+# Output format:
+# 001234:5
+# 002156:2
+# 003421:1
+# (edge_id:hit_count)
+```
+
+### Directory Processing
+
+```bash
+# Analyze all files in corpus
+afl-showmap -i corpus/ -o traces/ -- ./target @@
+
+# This creates:
+# traces/input1.dat
+# traces/input2.dat  
+# ...
+```
+
+### Collect Total Coverage
+
+```bash
+# Get combined coverage from all inputs
+afl-showmap -C -i corpus/ -o total_coverage.txt -- ./target @@
+
+# Output shows:
+# [*] Processing 150 files...
+# [+] Captured 1,234 tuples
+```
+
+### Compare Coverage
+
+```bash
+# Get coverage for two different inputs
+afl-showmap -o trace1.txt -- ./target < input1.dat
+afl-showmap -o trace2.txt -- ./target < input2.dat
+
+# Compare with diff
+diff trace1.txt trace2.txt
+```
+
+### Edge Coverage Only
+
+```bash
+# Ignore hit counts, only show which edges are covered
+afl-showmap -e -o edges.txt -- ./target input.dat
+
+# All non-zero values become 1:
+# 001234:1
+# 002156:1  
+# 003421:1
+```
+
+### Binary-Only Target
+
+```bash
+# Use QEMU mode for uninstrumented binary
+afl-showmap -Q -o trace.txt -- ./binary_target input.dat
+```
+
+### With Input File
+
+```bash
+# Target reads from a file
+afl-showmap -o trace.txt -f /tmp/test.dat -- ./target /tmp/test.dat < input.dat
+
+# Or use @@ placeholder
+afl-showmap -o trace.txt -- ./target @@ < input.dat
+```
+
+## Output Format
+
+### Text Format (Default)
+
+Each line contains an edge ID and hit count:
+
+```
+000123:5
+000456:2
+001234:1
+002341:3
+```
+
+- First number: Edge ID (tuple)
+- Second number: Hit count (classified into buckets)
+
+Hit count buckets:
+- 1 = exactly 1 hit
+- 2 = exactly 2 hits  
+- 3 = exactly 3 hits
+- 4 = 4-7 hits
+- 5 = 8-15 hits
+- 6 = 16-31 hits
+- 7 = 32-127 hits
+- 8 = 128+ hits
+
+### Binary Format
+
+With custom mutator support, binary coverage maps can be generated.
+
+## Use Cases
+
+### Corpus Minimization
+
+`afl-showmap` is used internally by [afl-cmin](/commands/afl-cmin):
+
+```bash
+# Manual coverage-based deduplication
+for file in corpus/*; do
+  afl-showmap -o "traces/$file" -- ./target "$file"
+done
+
+# Compare traces to find redundant files
+```
+
+### Coverage Analysis
+
+```bash
+# Measure total coverage of corpus
+afl-showmap -C -i queue/ -o total.txt -- ./target @@
+
+# Measure coverage of crashes
+afl-showmap -C -i crashes/ -o crash_coverage.txt -- ./target @@
+
+# Compare
+wc -l total.txt crash_coverage.txt
+```
+
+### Reproducing Crashes
+
+```bash
+# Verify crash reproduces and see coverage
+afl-showmap -o crash_trace.txt -- ./target crash_input
+
+# Exit code:
+# 0 = successful execution
+# 1 = timeout or execution problem
+# 2 = target crashed
+echo $?
+```
+
+### Integration with Tools
+
+```bash
+# Export coverage for external analysis
+afl-showmap -e -o edges.txt -- ./target input.dat
+
+# Process with custom scripts
+python analyze_coverage.py edges.txt
+```
+
+## Environment Variables
+
+<ParamField path="AFL_CMIN_CRASHES_ONLY" type="boolean">
+  In cmin mode, only write tuples for crashing inputs.
+</ParamField>
+
+<ParamField path="AFL_CMIN_ALLOW_ANY" type="boolean">
+  In cmin mode, write tuples for crashing inputs as well.
+</ParamField>
+
+<ParamField path="AFL_MAP_SIZE" type="number">
+  Shared memory size for coverage map. Must be >= target's compiled size.
+  
+  ```bash
+  AFL_MAP_SIZE=262144 afl-showmap -o trace.txt -- ./target
+  ```
+</ParamField>
+
+<ParamField path="AFL_FORKSRV_INIT_TMOUT" type="number">
+  Time to wait for forkserver during startup (milliseconds).
+</ParamField>
+
+<ParamField path="AFL_PRELOAD" type="path">
+  LD_PRELOAD / DYLD_INSERT_LIBRARIES settings for target.
+  
+  ```bash
+  AFL_PRELOAD=./hook.so afl-showmap -o trace.txt -- ./target
+  ```
+</ParamField>
+
+## Exit Codes
+
+- `0` - Successful execution
+- `1` - Timeout or execution problem  
+- `2` - Target crashed
+
+## Tips
+
+### Performance
+
+For processing large corpora:
+
+```bash
+# Use parallel processing
+find corpus/ -type f | parallel -j $(nproc) \
+  'afl-showmap -o traces/{/.}.trace -q -- ./target {}'
+```
+
+### Debugging
+
+Remove `-q` flag to see program output:
+
+```bash
+afl-showmap -o trace.txt -- ./target input.dat
+# Shows:
+# -- Program output begins --
+# [target output here]
+# -- Program output ends --
+```
+
+## See Also
+
+- [afl-fuzz](/commands/afl-fuzz) - Main fuzzing engine
+- [afl-cmin](/commands/afl-cmin) - Corpus minimizer (uses afl-showmap)
+- [afl-analyze](/commands/afl-analyze) - Input file analyzer

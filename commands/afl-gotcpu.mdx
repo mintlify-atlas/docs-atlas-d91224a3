@@ -1,0 +1,388 @@
+---
+title: afl-gotcpu
+description: CPU availability checker for optimal parallel fuzzing setup
+---
+
+The `afl-gotcpu` utility provides an accurate measurement of CPU availability and preemption rates to help determine the optimal number of parallel fuzzing instances.
+
+## Synopsis
+
+```bash
+afl-gotcpu
+```
+
+## Description
+
+`afl-gotcpu` measures CPU preemption rates on each core to determine how many AFL++ instances you can effectively run. It accounts for system load and other processes that may be competing for CPU time.
+
+This tool is particularly useful for:
+- Determining optimal fuzzer parallelization
+- Identifying overloaded or idle cores
+- Planning fuzzing infrastructure
+- Avoiding CPU contention
+
+## Usage
+
+```bash
+# Run without arguments
+afl-gotcpu
+```
+
+The tool has no command-line options.
+
+## Example Output
+
+```
+afl-gotcpu++4.10c by Michal Zalewski
+
+Measuring per-core preemption rate (this will take 2.00 sec)...
+
++----------------------+
+| Core | Util | Status |
++------+------+--------+
+|  0   | 12%  | IDLE   |
+|  1   | 89%  | MAYBE  |
+|  2   | 5%   | IDLE   |
+|  3   | 8%   | IDLE   |
+|  4   | 45%  | MAYBE  |
+|  5   | 95%  | BUSY   |
+|  6   | 3%   | IDLE   |
+|  7   | 7%   | IDLE   |
++----------------------+
+
+>>> SYSTEM SUMMARY <<<
+
+  Cores available:   8
+  Cores idle:        5
+  Cores maybe:       2
+  Cores busy:        1
+
+  Recommended for CPU-bound fuzzing:  5-7 instances
+  Max with some I/O wait:             7-8 instances
+```
+
+## Interpreting Results
+
+### Core Status
+
+<ParamField path="IDLE" type="status">
+  Core is mostly unused (&lt;20% utilized). Safe to run a fuzzer here.
+  
+  - Preemption rate: &lt;20%
+  - Recommendation: Run fuzzer on this core
+</ParamField>
+
+<ParamField path="MAYBE" type="status">  
+  Core has moderate load (20-80% utilized). May work for fuzzing but could have contention.
+  
+  - Preemption rate: 20-80%
+  - Recommendation: Use if needed, monitor performance
+</ParamField>
+
+<ParamField path="BUSY" type="status">
+  Core is heavily loaded (&gt;80% utilized). Avoid running fuzzers here.
+  
+  - Preemption rate: &gt;80%
+  - Recommendation: Don't use for fuzzing
+</ParamField>
+
+## Examples
+
+### Basic Usage
+
+```bash
+# Check CPU availability
+afl-gotcpu
+
+# Results show 6 idle cores
+# Start 6 fuzzing instances
+afl-fuzz -M fuzzer01 -i seeds -o sync -- ./target @@ &
+afl-fuzz -S fuzzer02 -i seeds -o sync -- ./target @@ &
+afl-fuzz -S fuzzer03 -i seeds -o sync -- ./target @@ &
+afl-fuzz -S fuzzer04 -i seeds -o sync -- ./target @@ &
+afl-fuzz -S fuzzer05 -i seeds -o sync -- ./target @@ &
+afl-fuzz -S fuzzer06 -i seeds -o sync -- ./target @@ &
+```
+
+### Optimal Parallel Setup
+
+```bash
+# 1. Check availability
+afl-gotcpu
+# Shows: 5-7 instances recommended
+
+# 2. Start with recommended number
+for i in {1..6}; do
+  if [ $i -eq 1 ]; then
+    afl-fuzz -M fuzzer$(printf %02d $i) -i seeds -o sync -- ./target @@ &
+  else
+    afl-fuzz -S fuzzer$(printf %02d $i) -i seeds -o sync -- ./target @@ &
+  fi
+done
+
+# 3. Monitor performance
+watch -n 60 'afl-whatsup -s sync'
+```
+
+### I/O-Bound Targets
+
+```bash
+# If target does I/O (network, disk), you can run more instances
+afl-gotcpu
+# Shows: Max with I/O wait: 8 instances
+
+# Can run 8+ instances because they'll spend time waiting
+for i in {1..8}; do
+  # Assign to specific core
+  afl-fuzz -S fuzzer$i -b $((i-1)) -i seeds -o sync -- ./target @@ &
+done
+```
+
+### Dedicated Fuzzing Machine
+
+```bash
+# On a dedicated fuzzing server
+afl-gotcpu
+# Shows: all cores idle
+
+# Use N-1 cores (leave one for system)
+NUM_CORES=$(nproc)
+NUM_FUZZERS=$((NUM_CORES - 1))
+
+for i in $(seq 1 $NUM_FUZZERS); do
+  if [ $i -eq 1 ]; then
+    afl-fuzz -M main -i seeds -o sync -- ./target @@ &
+  else
+    afl-fuzz -S fuzzer$i -i seeds -o sync -- ./target @@ &
+  fi
+done
+```
+
+## Use Cases
+
+### Pre-Fuzzing Setup
+
+```bash
+# Before starting a fuzzing campaign
+
+# 1. Configure system
+sudo afl-system-config
+
+# 2. Check CPU availability  
+afl-gotcpu
+
+# 3. Start appropriate number of fuzzers
+# (based on afl-gotcpu recommendations)
+```
+
+### Dynamic Scaling
+
+```bash
+#!/bin/bash
+# auto_scale_fuzzers.sh
+
+# Check current CPU availability
+IDLE=$(afl-gotcpu | grep "Cores idle:" | awk '{print $3}')
+
+# Count running fuzzers
+RUNNING=$(pgrep -c afl-fuzz)
+
+# Start more if cores are available
+if [ $IDLE -gt 2 ] && [ $RUNNING -lt 8 ]; then
+  echo "Starting additional fuzzer..."
+  NEXT=$((RUNNING + 1))
+  afl-fuzz -S fuzzer$NEXT -i - -o sync -- ./target @@ &
+fi
+```
+
+### Shared Server Setup
+
+```bash
+# On a shared development server
+afl-gotcpu
+# Shows: 2 idle cores, 6 busy
+
+# Only use the 2 idle cores
+afl-fuzz -M fuzzer01 -b 2 -i seeds -o sync -- ./target @@ &
+afl-fuzz -S fuzzer02 -b 5 -i seeds -o sync -- ./target @@ &
+```
+
+## Technical Details
+
+### Measurement Method
+
+The tool:
+
+1. Binds to each CPU core individually
+2. Runs a tight CPU-bound loop for ~2 seconds
+3. Measures actual CPU time vs. wall clock time
+4. Calculates preemption rate from the difference
+
+```c
+// Simplified algorithm
+start_time = get_wall_clock_time();
+start_cpu = get_cpu_time();
+
+// Run busy loop for target duration
+while (get_wall_clock_time() - start_time < 2000ms) {
+  // Busy work
+}
+
+end_time = get_wall_clock_time();
+end_cpu = get_cpu_time();
+
+// Calculate preemption
+wall_delta = end_time - start_time;
+cpu_delta = end_cpu - start_cpu;
+preemption_rate = (wall_delta - cpu_delta) / wall_delta;
+```
+
+### Why It Matters
+
+Running too many fuzzers:
+- Causes context switching overhead
+- Reduces individual fuzzer performance
+- May not increase overall throughput
+- Can slow down the whole system
+
+Running too few fuzzers:
+- Wastes available CPU resources
+- Reduces diversity in fuzzing strategies
+- Misses parallelization benefits
+
+## Recommendations
+
+### CPU-Bound Fuzzing
+
+```bash
+# For pure CPU-bound targets (no I/O)
+# Use: number of idle cores
+
+afl-gotcpu  # Shows 6 idle cores
+# Run exactly 6 instances
+```
+
+### I/O-Bound Fuzzing
+
+```bash
+# For targets with I/O (network, disk, sleep)
+# Use: 1.5x to 2x number of cores
+
+afl-gotcpu  # Shows 8 cores
+# Can run 12-16 instances
+```
+
+### Mixed Workload
+
+```bash
+# On a system running other tasks
+# Use: only truly idle cores
+
+afl-gotcpu  # Shows 3 idle, 2 maybe, 3 busy
+# Run 3-5 instances maximum
+```
+
+## Comparison with Load Average
+
+```bash
+# Load average (traditional)
+uptime
+# load average: 2.45, 2.12, 1.98
+
+# vs. afl-gotcpu (precise per-core measurement)
+afl-gotcpu
+# Core 0: IDLE, Core 1: BUSY, Core 2: IDLE, ...
+
+# afl-gotcpu is more accurate for fuzzing planning
+```
+
+## Automation
+
+### Launch Script
+
+```bash
+#!/bin/bash
+# smart_launch.sh - Auto-detect optimal fuzzer count
+
+TMPFILE=$(mktemp)
+afl-gotcpu > "$TMPFILE"
+
+IDLE=$(grep "Cores idle:" "$TMPFILE" | awk '{print $3}')
+MAYBE=$(grep "Cores maybe:" "$TMPFILE" | awk '{print $3}')
+
+NUM_FUZZERS=$((IDLE + MAYBE / 2))
+
+echo "Starting $NUM_FUZZERS fuzzing instances..."
+
+for i in $(seq 1 $NUM_FUZZERS); do
+  if [ $i -eq 1 ]; then
+    afl-fuzz -M main -i seeds -o sync -- ./target @@ &
+  else
+    afl-fuzz -S fuzzer$i -i seeds -o sync -- ./target @@ &
+  fi
+  sleep 1
+done
+
+rm "$TMPFILE"
+echo "Launched $NUM_FUZZERS fuzzers"
+```
+
+## Platform Support
+
+Supported on:
+- Linux
+- FreeBSD  
+- NetBSD
+- macOS (x86_64 only, limited on ARM)
+- DragonFly BSD
+- Solaris
+
+Note: ARM64 macOS has limited support due to CPU core architecture differences.
+
+## Tips
+
+### Before Starting Campaign
+
+```bash
+# 1. Configure system
+sudo afl-system-config
+
+# 2. Check CPU
+afl-gotcpu
+
+# 3. Stop unnecessary services
+sudo systemctl stop unnecessary-service
+
+# 4. Re-check
+afl-gotcpu  # Should show more idle cores
+
+# 5. Start fuzzing
+```
+
+### Regular Monitoring
+
+```bash
+# Check periodically during fuzzing
+watch -n 300 afl-gotcpu  # Every 5 minutes
+
+# Adjust fuzzer count if cores become busy/idle
+```
+
+### Cloud Instances
+
+```bash
+# On cloud VMs, check if you're getting full cores
+afl-gotcpu
+
+# Some cloud providers oversell CPUs
+# If cores show as BUSY on idle instance, consider:
+# - Different instance type
+# - Dedicated instances
+# - Bare metal
+```
+
+## See Also
+
+- [afl-fuzz](/commands/afl-fuzz) - Main fuzzing engine (-b flag for core binding)
+- [afl-whatsup](/commands/afl-whatsup) - Monitor parallel fuzzers  
+- [afl-system-config](/commands/afl-system-config) - System configuration helper

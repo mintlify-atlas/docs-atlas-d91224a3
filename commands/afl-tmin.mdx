@@ -1,0 +1,363 @@
+---
+title: afl-tmin
+description: Test case minimizer that reduces input size while preserving crashes or coverage
+---
+
+The `afl-tmin` tool minimizes test cases by removing as much data as possible while keeping the program in a crashing state or producing consistent instrumentation output.
+
+## Synopsis
+
+```bash
+afl-tmin -i input_file -o output_file [options] -- /path/to/target [target_args]
+```
+
+## Description
+
+`afl-tmin` takes a crashing or interesting input and systematically removes bytes, blocks, and chunks to produce the smallest input that still triggers the same behavior. This makes crash analysis and debugging much easier.
+
+## Required Parameters
+
+<ParamField path="-i" type="path" required>
+  Input test case to be minimized.
+  
+  ```bash
+  afl-tmin -i crash.dat -o crash.min -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-o" type="path" required>
+  Output file for the minimized data.
+  
+  ```bash
+  afl-tmin -i large_crash.dat -o small_crash.dat -- ./target @@
+  ```
+</ParamField>
+
+## Execution Control
+
+<ParamField path="-t" type="number">
+  Timeout for each run in milliseconds (default: 1000ms).
+  
+  ```bash
+  afl-tmin -i crash -o crash.min -t 5000 -- ./slow_target @@
+  ```
+</ParamField>
+
+<ParamField path="-m" type="number">
+  Memory limit for child process in megabytes (default: none).
+  
+  ```bash
+  afl-tmin -i crash -o crash.min -m 512 -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-f" type="path">
+  Input file read by the tested program (default: stdin).
+  
+  ```bash
+  afl-tmin -i crash -o crash.min -f /tmp/input -- ./target /tmp/input
+  ```
+</ParamField>
+
+<ParamField path="-Q" type="boolean">
+  Use QEMU mode for binary-only targets (Linux only).
+  
+  ```bash
+  afl-tmin -i crash -o crash.min -Q -- ./binary_target @@
+  ```
+</ParamField>
+
+<ParamField path="-O" type="boolean">
+  Use FRIDA mode for binary-only instrumentation.
+</ParamField>
+
+<ParamField path="-U" type="boolean">
+  Use Unicorn mode (Linux only).
+</ParamField>
+
+## Minimization Settings
+
+<ParamField path="-e" type="boolean">
+  Solve for edge coverage only, ignore hit counts. Less precise but faster.
+  
+  ```bash
+  afl-tmin -i interesting -o interesting.min -e -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-x" type="boolean">
+  Treat non-zero exit codes as crashes. Useful when the target calls `exit(1)` instead of crashing.
+  
+  ```bash
+  afl-tmin -i error_case -o error.min -x -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-H" type="boolean">
+  Minimize a hang (hang mode). Tries to keep the input timing out.
+  
+  ```bash
+  afl-tmin -i hang.dat -o hang.min -H -t 1000 -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-l" type="number">
+  Set minimum block deletion length. Higher values speed up minimization but may miss some reductions.
+  
+  ```bash
+  afl-tmin -i crash -o crash.min -l 16 -- ./target @@
+  ```
+</ParamField>
+
+## Examples
+
+### Minimize a Crash
+
+```bash
+# Before: 10,234 bytes
+ls -lh crash_input
+-rw-r--r-- 1 user user 10K Dec 1 10:00 crash_input
+
+# Minimize
+afl-tmin -i crash_input -o crash_min -- ./target @@
+
+# After: 47 bytes
+ls -lh crash_min  
+-rw-r--r-- 1 user user 47 Dec 1 10:05 crash_min
+
+# Verify crash still occurs
+./target crash_min
+Segmentation fault (core dumped)
+```
+
+### Output Example
+
+```
+afl-tmin++4.10c by Michal Zalewski
+[*] Read 10234 bytes from 'crash_input'.
+[+] Performing dry run (mem limit = none, timeout = 1000 ms)...
+[*] Target is crashing with the original file.
+
+[*] Stage #0: Removing blocks...
+    Block length = 512, remaining size = 9722
+    Block length = 256, remaining size = 8954
+    ...
+    
+[*] Stage #1: Minimizing symbols...
+    Total symbols changed = 234
+    
+[+] Successfully minimized to 47 bytes (99.54% reduction)
+```
+
+### Minimize for Coverage
+
+```bash
+# Minimize an interesting input while keeping coverage
+afl-tmin -i interesting_input -o interesting_min -- ./target @@
+
+# This preserves the execution path, not necessarily a crash
+```
+
+### Minimize a Hang
+
+```bash
+# Minimize input that causes timeout
+afl-tmin -i hang_input -o hang_min -H -t 2000 -- ./target @@
+
+# -H enables hang mode
+# -t sets timeout to detect hangs
+```
+
+### Binary-Only Target
+
+```bash
+# Minimize crash in uninstrumented binary
+afl-tmin -i crash -o crash.min -Q -- ./closed_source @@
+```
+
+### With Exit Code Detection
+
+```bash
+# Target returns non-zero on errors (not a real crash)
+afl-tmin -i error_input -o error_min -x -- ./target @@
+
+# -x treats exit(1) as a crash
+```
+
+### Fast Minimization
+
+```bash
+# Speed up minimization for large files
+afl-tmin -i large_crash -o crash.min -l 128 -- ./target @@
+
+# -l 128 sets larger block deletion size
+```
+
+## Minimization Process
+
+The tool uses several strategies:
+
+### 1. Block Deletion
+
+Removes large blocks first, then progressively smaller ones:
+
+```
+Original: [====================================] 10KB
+Stage 1:  [========================] 6KB  (removed 4KB blocks)
+Stage 2:  [==================] 4KB  (removed 2KB blocks)  
+Stage 3:  [==============] 2KB  (removed 512B blocks)
+```
+
+### 2. Symbol Minimization
+
+Replaces bytes with simpler values:
+
+```
+Before: [0xFF, 0xAB, 0x42, 0x3D, ...]
+After:  [0x00, 0x00, 0x42, 0x00, ...]  (keeps meaningful bytes)
+```
+
+### 3. Alphabet Reduction
+
+Reduces character diversity:
+
+```
+Before: "AbCdEfGh123!@#"
+After:  "aaaaaaa111"
+```
+
+## Use Cases
+
+### Crash Triage
+
+```bash
+# Process all crashes from fuzzer
+for crash in out/crashes/id:*; do
+  name=$(basename "$crash")
+  afl-tmin -i "$crash" -o "minimized/$name" -- ./target @@
+done
+
+# Now you have minimal reproducers for each crash
+```
+
+### Bug Reporting
+
+```bash
+# Original crash: 500KB of random data
+# Minimized crash: 12 bytes
+
+# Much easier to include in bug report!
+cat crash.min | xxd
+00000000: 4141 4141 00ff 00ff dead beef            AAAA........
+```
+
+### Debugging
+
+```bash
+# Minimize crash
+afl-tmin -i crash -o crash.min -- ./target @@
+
+# Debug with minimal input
+gdb --args ./target crash.min
+```
+
+### Finding Root Cause
+
+```bash
+# Compare minimized crashes to find patterns
+afl-tmin -i crash1 -o crash1.min -- ./target @@
+afl-tmin -i crash2 -o crash2.min -- ./target @@
+
+# Examine minimal forms
+xxd crash1.min
+xxd crash2.min
+
+# May reveal they're the same bug
+```
+
+## Tips
+
+### Performance
+
+Minimization can take a while for large files:
+
+```bash
+# Use -l to speed up (may miss some reduction)
+afl-tmin -i huge_crash -o crash.min -l 1024 -- ./target @@
+
+# Or accept lower quality for speed
+afl-tmin -i crash -o crash.min -e -- ./target @@
+```
+
+### Exact Crash Path
+
+For crash minimization, use `-e` with caution:
+
+```bash
+# Without -e: ensures exact same code path
+afl-tmin -i crash -o crash.min -- ./target @@
+
+# With -e: may take different path to same crash (faster but less precise)
+afl-tmin -i crash -o crash.min -e -- ./target @@
+```
+
+### Hang Minimization
+
+Set appropriate timeout:
+
+```bash
+# Timeout too low: may not detect hang
+afl-tmin -i hang -o hang.min -H -t 100 -- ./target @@  # Bad
+
+# Timeout appropriate: detects hang reliably  
+afl-tmin -i hang -o hang.min -H -t 2000 -- ./target @@  # Good
+```
+
+## Environment Variables
+
+<ParamField path="AFL_TMIN_EXACT" type="boolean">
+  Require execution paths to match exactly when minimizing crashes. More precise but slower.
+  
+  ```bash
+  AFL_TMIN_EXACT=1 afl-tmin -i crash -o crash.min -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="AFL_MAP_SIZE" type="number">
+  Shared memory size for coverage map.
+</ParamField>
+
+<ParamField path="AFL_FORKSRV_INIT_TMOUT" type="number">
+  Forkserver startup timeout in milliseconds.
+</ParamField>
+
+<ParamField path="AFL_PRELOAD" type="path">
+  LD_PRELOAD libraries for target.
+</ParamField>
+
+<ParamField path="TMPDIR" type="path">
+  Directory for temporary files.
+</ParamField>
+
+## Statistics
+
+During minimization, afl-tmin shows:
+
+- **Bytes read** - Original input size
+- **Block length** - Current deletion block size
+- **Remaining size** - Current file size  
+- **Symbols changed** - Bytes simplified
+- **Final reduction** - Percentage saved
+
+## Limitations
+
+1. **Time-consuming**: Large files can take hours to minimize
+2. **May not be minimal**: Heuristic approach may miss optimizations
+3. **Single behavior**: Only preserves one crash/path, not multiple bugs
+4. **Deterministic**: Requires reproducible crashes
+
+## See Also
+
+- [afl-fuzz](/commands/afl-fuzz) - Main fuzzing engine
+- [afl-cmin](/commands/afl-cmin) - Corpus minimizer
+- [afl-analyze](/commands/afl-analyze) - Input analysis tool

@@ -1,0 +1,257 @@
+---
+title: Unicorn Mode
+description: Emulation-based fuzzing for binary code snippets using the Unicorn Engine
+---
+
+Unicorn mode allows you to fuzz binary code snippets using the [Unicorn Engine](https://github.com/unicorn-engine/unicorn). This is ideal for fuzzing specific functions or code segments that can't be built with afl-cc or used in QEMU mode.
+
+## Overview
+
+Unicorn mode provides AFL++ instrumentation for binary code running in the Unicorn emulator. You can fuzz black-box, closed-source binary snippets with full control over memory layout and execution state.
+
+**Performance**: Significant penalty compared to native AFL++ (but better than no fuzzing!)
+
+**Language Support**: Python, C, Rust harnesses
+
+**Original Authors**:
+- Nathan Voss (original implementation)
+- Dominik Maier (AFL++ port)
+- Andrea Fioraldi (CompareCoverage, NeverZero)
+- Ziqiao Kong (current maintainer)
+
+## Building Unicorn Mode
+
+<Steps>
+
+### Build AFL++
+
+First, build AFL++ as usual:
+
+```bash
+make
+```
+
+### Build Unicorn Support
+
+Navigate to unicorn_mode and run the build script:
+
+```bash
+cd unicorn_mode
+./build_unicorn_support.py
+```
+
+Building Unicorn takes approximately 5-10 minutes. The script automatically compiles a sample application and verifies functionality.
+
+</Steps>
+
+## Requirements for Fuzzing
+
+To effectively use Unicorn mode, you need:
+
+1. **Binary code** to be fuzzed
+2. **Memory map knowledge** and good starting state
+3. **Seed corpus** folder with sample inputs
+   - Follow AFL++ guidance on creating quality corpora
+   - Quality of results depends on seed quality
+4. **Unicornafl-based test harness** (in Rust, C, or Python) that:
+   - Adds memory map regions
+   - Loads binary code into memory
+   - Calls `uc.afl_fuzz()` or `uc.afl_start_forkserver`
+   - Loads and validates fuzzer input from command-line file
+   - Checks input constraints (size, invalid bytes, etc.) in the place_input handler
+   - Sets up registers and memory state
+   - Emulates the target code from start to finish
+   - Crashes on errors by throwing a signal (SIGSEGV, SIGKILL, SIGABORT, etc.)
+
+## Basic Usage
+
+Once your harness is ready, run afl-fuzz with the `-U` flag:
+
+```bash
+afl-fuzz -U -m none -i /path/to/inputs -o /path/to/results -- ./test_harness @@
+```
+
+The standard afl-fuzz command-line format applies. See the main AFL++ documentation for effective fuzzing strategies.
+
+## Example Harnesses
+
+Several examples are provided in the `samples/` directory:
+
+### Available Examples
+
+| Example | Language | Description |
+|---------|----------|-------------|
+| `c` | C | Simple C bindings usage |
+| `compcov_x64` | Python | Using CompareCoverage to traverse hard-to-reach blocks |
+| `persistent` | C | Persistent mode for maximum speed with state reset |
+| `python_simple` | Python | Simple Python example |
+| `speedtest/c` | C | Performance comparison harness |
+| `speedtest/python` | Python | Python performance benchmark |
+| `speedtest/rust` | Rust | Rust performance benchmark |
+
+### Running Examples
+
+Most harnesses include:
+- Well-documented source code
+- `afl-fuzz` command line examples
+- `make fuzz` Makefile targets
+- Pre-built targets (where applicable)
+
+See the [speedtest documentation](https://github.com/AFLplusplus/AFLplusplus/blob/stable/unicorn_mode/samples/speedtest/README.md) for language performance comparisons.
+
+## Configuration Options
+
+### CompareCoverage
+
+Enable sub-instruction instrumentation similar to laf-intel:
+
+```bash
+export UNICORN_AFL_CMPCOV=1
+```
+
+This splits multi-byte comparisons to provide feedback for each correct byte.
+
+**Supported Architectures**: x86, x86_64, ARM
+
+## Advanced Resources
+
+### Framework Integration
+
+For advanced emulation scenarios, consider:
+
+- [BaseSAFE](https://github.com/fgsect/BaseSAFE) - Emulation framework
+- [Qiling](https://github.com/qilingframework/qiling) - Advanced binary emulation
+
+### Documentation and Tutorials
+
+Read the comprehensive documentation in `unicorn_mode/unicornafl/docs` for:
+- Updating Unicorn versions
+- Advanced configuration
+- Troubleshooting
+
+**Blog Posts**:
+
+1. [AFL Unicorn: Fuzzing Arbitrary Binary Code](https://medium.com/@njvoss299/afl-unicorn-fuzzing-arbitrary-binary-code-563ca28936bf)
+2. [AFL Unicorn Part 2: Fuzzing the Unfuzzable](https://hackernoon.com/afl-unicorn-part-2-fuzzing-the-unfuzzable-bea8de3540a5)
+
+**Research Paper**:
+
+[Unicorefuzz (USENIX WOOT '19)](https://www.usenix.org/conference/woot19/presentation/maier)
+
+### Helper Scripts
+
+The `helper_scripts/` directory contains utilities to:
+- Dump context from running processes
+- Load saved context
+- Hook heap allocations
+
+See the blog posts above for usage examples.
+
+## Installation Details
+
+The build script:
+
+1. Builds unicornafl and Python bindings
+2. Installs them system-wide (leaves existing Unicorn installations untouched)
+3. Builds C/C++ bindings in:
+   - `unicorn_mode/lib` (libraries)
+   - `unicorn_mode/include` (headers)
+
+## Creating a Harness
+
+### Basic Structure (Python)
+
+```python
+from unicornafl import *
+from unicornafl.x86_const import *
+
+# Initialize emulator
+uc = Uc(UC_ARCH_X86, UC_ARCH_MODE_64)
+
+# Map memory
+uc.mem_map(ADDRESS, SIZE)
+
+# Load binary code
+uc.mem_write(ADDRESS, BINARY_CODE)
+
+# Set up registers
+uc.reg_write(UC_X86_REG_RSP, STACK_ADDR)
+
+# Load input
+def place_input(uc, input_data, persistent_round, data):
+    # Validate input constraints
+    if len(input_data) > MAX_SIZE:
+        return False
+    
+    # Place input in memory
+    uc.mem_write(INPUT_ADDR, input_data)
+    return True
+
+# Start fuzzing
+uc.afl_fuzz(
+    input_file=sys.argv[1],
+    place_input_callback=place_input,
+    exits=[END_ADDRESS]
+)
+```
+
+### Basic Structure (C)
+
+```c
+#include <unicorn/unicorn.h>
+#include <unicornafl/unicornafl.h>
+
+int main(int argc, char **argv) {
+    uc_engine *uc;
+    
+    // Initialize
+    uc_open(UC_ARCH_X86, UC_MODE_64, &uc);
+    
+    // Map memory
+    uc_mem_map(uc, ADDRESS, SIZE, UC_PROT_ALL);
+    
+    // Load code
+    uc_mem_write(uc, ADDRESS, code, sizeof(code));
+    
+    // Set up registers
+    uc_reg_write(uc, UC_X86_REG_RSP, &stack);
+    
+    // Start fuzzing
+    uc_afl_fuzz(uc, argv[1], place_input_callback, 
+                &exits, 1, NULL, 0, NULL);
+    
+    return 0;
+}
+```
+
+## Best Practices
+
+<Tip>
+**Input Validation**: Always validate input constraints in the `place_input` handler. Returning `false` marks the input as uninteresting, saving fuzzer time.
+</Tip>
+
+<Tip>
+**State Reset**: For persistent mode, ensure you properly reset all relevant state between iterations for accurate fuzzing.
+</Tip>
+
+<Tip>
+**Memory Layout**: Carefully plan your memory map to match the target's expected environment. Use helper scripts to dump real process context.
+</Tip>
+
+## Limitations
+
+- **Performance**: Slower than native instrumentation or QEMU mode
+- **Setup Complexity**: Requires detailed understanding of target's memory layout and execution state
+- **Full System Emulation**: Not suitable for targets requiring complex OS interactions (consider Nyx mode instead)
+
+## When to Use Unicorn Mode
+
+Unicorn mode is ideal when:
+
+- You need to fuzz specific binary functions or code snippets
+- You want fine-grained control over execution environment
+- The target can't be easily built with afl-cc
+- QEMU mode doesn't provide sufficient control
+- You're fuzzing embedded firmware or specific CPU architectures
+
+For full-program fuzzing, consider [QEMU mode](qemu-mode.mdx) or [FRIDA mode](frida-mode.mdx) instead.

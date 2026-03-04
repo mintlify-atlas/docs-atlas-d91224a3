@@ -1,0 +1,113 @@
+---
+title: afl-c++
+description: AFL++ C++ compiler wrapper
+---
+
+The `afl-c++` wrapper is a C++-specific version of [afl-cc](/commands/afl-cc) that automatically uses C++ compilers (g++ or clang++).
+
+## Synopsis
+
+```bash
+afl-c++ [compiler options] source_files...
+```
+
+## Description
+
+`afl-c++` is identical to `afl-cc` but defaults to C++ compilation. It automatically:
+- Uses `g++` or `clang++` instead of `gcc`/`clang`
+- Handles C++ standard library linking
+- Supports C++-specific instrumentation
+
+## Usage
+
+All options and environment variables from [afl-cc](/commands/afl-cc) apply to `afl-c++`.
+
+### Basic Example
+
+```bash
+afl-c++ -o program program.cpp
+```
+
+### With Specific C++ Standard
+
+```bash
+afl-c++ -std=c++17 -o program program.cpp
+```
+
+### Custom C++ Compiler
+
+```bash
+AFL_CXX=clang++-14 afl-c++ -o program program.cpp
+```
+
+## C++ Specific Considerations
+
+### Exception Handling
+
+AFL++ instruments exception handling code. For performance-critical fuzzing:
+
+```bash
+afl-c++ -fno-exceptions -o program program.cpp
+```
+
+### RTTI (Runtime Type Information)
+
+Disable if not needed:
+
+```bash
+afl-c++ -fno-rtti -o program program.cpp
+```
+
+### Templates and Inline Functions
+
+LTO mode provides better instrumentation for heavily templated code:
+
+```bash
+afl-clang-lto++ -o program program.cpp
+```
+
+## Coverage Macros in C++
+
+```cpp
+#include <cstdint>
+#include <cstddef>
+
+extern "C" {
+  __AFL_FUZZ_INIT();
+}
+
+int main() {
+  #ifdef __AFL_FUZZ_TESTCASE_LEN
+  while (__AFL_LOOP(10000)) {
+    std::size_t len = __AFL_FUZZ_TESTCASE_LEN;
+    uint8_t *buf = __AFL_FUZZ_TESTCASE_BUF;
+    
+    // Fuzz target
+    process_input(buf, len);
+  }
+  #endif
+  return 0;
+}
+```
+
+## Selective Coverage in C++
+
+Use the `__AFL_COVERAGE()` macro:
+
+```cpp
+__AFL_COVERAGE();
+
+class MyClass {
+public:
+  void critical_method() {
+    __AFL_COVERAGE_ON();
+    // This code will be instrumented
+    __AFL_COVERAGE_OFF();
+  }
+};
+```
+
+## See Also
+
+- [afl-cc](/commands/afl-cc) - C compiler wrapper documentation
+- [afl-fuzz](/commands/afl-fuzz) - Main fuzzing engine

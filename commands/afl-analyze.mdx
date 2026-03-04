@@ -1,0 +1,332 @@
+---
+title: afl-analyze
+description: Input file analyzer that identifies byte structure and constraints
+---
+
+The `afl-analyze` tool analyzes an input file to identify which bytes affect program behavior and how they're constrained. This helps understand input structure for targeted fuzzing.
+
+## Synopsis
+
+```bash
+afl-analyze -i input_file [options] -- /path/to/target [target_args]
+```
+
+## Description
+
+`afl-analyze` performs a detailed analysis of how a target program processes an input file. It systematically flips bytes and observes changes in execution paths to determine:
+
+- Which bytes affect program behavior
+- Which bytes are ignored or unused
+- Possible byte constraints and dependencies
+- Structure and format patterns
+
+This information can guide manual analysis and help create better fuzzing dictionaries.
+
+## Required Parameters
+
+<ParamField path="-i" type="path" required>
+  Input test case to be analyzed.
+  
+  ```bash
+  afl-analyze -i sample.dat -- ./target @@
+  ```
+</ParamField>
+
+## Execution Control
+
+<ParamField path="-t" type="number">
+  Timeout for each run in milliseconds (default: 1000ms).
+  
+  ```bash
+  afl-analyze -i sample.dat -t 5000 -- ./slow_target @@
+  ```
+</ParamField>
+
+<ParamField path="-m" type="number">
+  Memory limit for child process in megabytes.
+  
+  ```bash
+  afl-analyze -i sample.dat -m 512 -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-f" type="path">
+  Input file read by the tested program.
+  
+  ```bash
+  afl-analyze -i sample -f /tmp/input -- ./target /tmp/input
+  ```
+</ParamField>
+
+<ParamField path="-Q" type="boolean">
+  Use QEMU mode for binary-only targets (Linux only).
+  
+  ```bash
+  afl-analyze -i sample.dat -Q -- ./binary_target @@
+  ```
+</ParamField>
+
+<ParamField path="-O" type="boolean">
+  Use FRIDA mode.
+</ParamField>
+
+<ParamField path="-U" type="boolean">
+  Use Unicorn mode.
+</ParamField>
+
+## Analysis Options
+
+<ParamField path="-e" type="boolean">
+  Look for edge coverage only, ignore hit counts.
+  
+  ```bash
+  afl-analyze -i sample.dat -e -- ./target @@
+  ```
+</ParamField>
+
+## Examples
+
+### Basic Analysis
+
+```bash
+afl-analyze -i sample.png -- ./png_parser @@
+```
+
+### Output Example
+
+```
+afl-analyze++4.10c by Michal Zalewski
+
+[*] Analyzing 'sample.png' (1,234 bytes)...
+[*] Generating coverage map...
+[+] Baseline execution: path ID 0x12ab4567
+[*] Analyzing byte 0/1234...
+
+--- Byte analysis results ---
+
+Offset    Hex Value   Classification
+------    ---------   --------------
+0000      89          header marker (critical)
+0001      50          header marker (critical)  
+0002      4e          header marker (critical)
+0003      47          header marker (critical)
+0004      0d          header marker (critical)
+0005      0a          header marker (critical)
+0006      1a          header marker (critical)
+0007      0a          header marker (critical)
+0008      00          size field (critical)
+0009      00          size field (critical)
+...
+
+[+] Analysis complete.
+```
+
+### Analyzing Different File Types
+
+```bash
+# PDF file
+afl-analyze -i document.pdf -- ./pdf_reader @@
+
+# XML file  
+afl-analyze -i config.xml -- ./xml_parser @@
+
+# Binary protocol
+afl-analyze -i network.pcap -- ./protocol_handler @@
+```
+
+### Binary Target
+
+```bash
+# Analyze with QEMU mode
+afl-analyze -i sample.dat -Q -- ./closed_source @@
+```
+
+## Output Interpretation
+
+### Byte Classifications
+
+The tool classifies each byte:
+
+- **critical** - Changing this byte causes execution path change
+- **uncritical** - Byte doesn't affect path (but may affect data)
+- **suspicious** - Byte has unusual behavior patterns
+- **constant** - Byte must have specific value (e.g., magic number)
+
+### Example Analysis
+
+```
+Offset    Value   Notes
+------    -----   -----
+0000-0003  Magic   PNG signature bytes (critical)
+0004-0007  Size    Width field (critical if valid range)
+0008-000b  Size    Height field (critical if valid range)  
+000c-000f  CRC     Checksum (critical)
+0010-0013  Type    Chunk type (critical)
+0014-00ff  Data    Chunk data (mostly uncritical)
+```
+
+## Use Cases
+
+### Understanding File Format
+
+```bash
+# Analyze to find structure
+afl-analyze -i sample.bin -- ./parser @@
+
+# Results show:
+# - Magic bytes at offset 0-3
+# - Size field at 4-7
+# - Type field at 8
+# - Data starts at 12
+```
+
+### Creating Fuzzing Dictionary
+
+```bash
+# Run analysis
+afl-analyze -i sample.xml -- ./xml_parser @@
+
+# Extract interesting constants for dictionary
+echo 'header="<?xml"' > dict.txt
+echo 'closing="</root>"' >> dict.txt
+echo 'version="version="1.0""' >> dict.txt
+
+# Use in fuzzing
+afl-fuzz -x dict.txt -i seeds -o out -- ./xml_parser @@
+```
+
+### Identifying Checksums
+
+```bash
+# Analyze file with checksums
+afl-analyze -i packet.bin -- ./protocol @@
+
+# Critical bytes that must be specific values
+# might indicate checksums or other integrity checks
+```
+
+### Finding Input Dependencies
+
+```bash
+# Analyze to find byte relationships
+afl-analyze -i complex.dat -- ./target @@
+
+# May reveal:
+# - Byte 4 is length of data at byte 16+
+# - Bytes 8-11 are checksum of bytes 12-end
+# - Byte 0 determines format of rest
+```
+
+## Analysis Process
+
+The tool performs these steps:
+
+1. **Baseline run** - Execute with original input, record path
+2. **Byte flipping** - Flip each byte individually
+3. **Path comparison** - Check if execution path changed
+4. **Classification** - Categorize each byte based on behavior
+5. **Pattern detection** - Look for structural patterns
+
+## Limitations
+
+1. **Time-consuming** - Analyzes every byte individually
+2. **No multi-byte relationships** - Can't detect dependencies between distant bytes
+3. **Path-based only** - Doesn't see data-only changes
+4. **Large files** - Impractical for files &gt;10KB
+
+```bash
+# For large files, extract smaller samples first
+head -c 1024 large_file.bin > sample.bin
+afl-analyze -i sample.bin -- ./target @@
+```
+
+## Environment Variables
+
+<ParamField path="AFL_ANALYZE_HEX" type="boolean">
+  Print file offsets in hexadecimal instead of decimal.
+  
+  ```bash
+  AFL_ANALYZE_HEX=1 afl-analyze -i sample.dat -- ./target @@
+  
+  # Output:
+  # Offset    Hex Value
+  # 0x0000    89
+  # 0x0001    50
+  ```
+</ParamField>
+
+<ParamField path="AFL_MAP_SIZE" type="number">
+  Shared memory size for coverage map.
+</ParamField>
+
+<ParamField path="AFL_PRELOAD" type="path">
+  LD_PRELOAD libraries for target.
+</ParamField>
+
+<ParamField path="TMPDIR" type="path">
+  Directory for temporary files.
+</ParamField>
+
+## Practical Tips
+
+### Sample Selection
+
+Choose representative inputs:
+
+```bash
+# Good: minimal valid input
+afl-analyze -i minimal.xml -- ./parser @@
+
+# Bad: huge complex file
+afl-analyze -i 50MB_document.xml -- ./parser @@  # Will take forever
+```
+
+### Combining with Other Tools
+
+```bash
+# 1. Minimize first
+afl-tmin -i large.dat -o small.dat -- ./target @@
+
+# 2. Then analyze
+afl-analyze -i small.dat -- ./target @@
+
+# 3. Create dictionary from findings
+vi dict.txt  # Add discovered constants
+
+# 4. Fuzz with dictionary
+afl-fuzz -x dict.txt -i seeds -o out -- ./target @@
+```
+
+### Iterative Analysis
+
+```bash
+# Analyze different sample files
+afl-analyze -i sample1.dat -- ./target @@
+afl-analyze -i sample2.dat -- ./target @@
+afl-analyze -i sample3.dat -- ./target @@
+
+# Compare results to find common structure
+```
+
+## When to Use
+
+Use `afl-analyze` when:
+
+- Starting to fuzz a new file format
+- Need to understand input structure
+- Creating custom dictionaries
+- Debugging why fuzzing isn't finding paths
+- Reverse engineering file formats
+
+Don't use when:
+
+- Files are very large (&gt;10KB)
+- Format is already well-understood
+- Time is limited (analysis is slow)
+- Just want to find bugs (use afl-fuzz directly)
+
+## See Also
+
+- [afl-fuzz](/commands/afl-fuzz) - Main fuzzing engine
+- [afl-tmin](/commands/afl-tmin) - Minimize before analyzing
+- [afl-showmap](/commands/afl-showmap) - Coverage analysis

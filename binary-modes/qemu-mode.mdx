@@ -1,0 +1,297 @@
+---
+title: QEMU Mode
+description: High-performance binary-only instrumentation using QEMU user emulation
+---
+
+QEMU mode leverages QEMU's user emulation to provide instrumentation for black-box, closed-source binaries. This allows you to fuzz targets that can't be built with afl-cc.
+
+## Overview
+
+QEMU mode uses a patched version of QEMU (qemuafl) to instrument binary-only targets. The usual performance cost is 2-5x, which is considerably better than tools like DynamoRIO and PIN.
+
+**Performance**: 2-5x slowdown compared to native instrumentation
+
+**Platform Support**: Linux only (BSD support may be possible but not currently implemented)
+
+**Architectures**: x86, x86_64, arm, aarch64, i386 (and others via CPU_TARGET)
+
+## Building QEMU Mode
+
+<Steps>
+
+### Install Dependencies
+
+You'll need libtool and glib2-devel:
+
+```bash
+sudo apt-get install libtool libglib2.0-dev
+```
+
+### Build QEMU Support
+
+Run the build script from the AFL++ root directory:
+
+```bash
+cd qemu_mode
+./build_qemu_support.sh
+```
+
+This will download, configure, and compile the QEMU binary. Note that QEMU is a large project, so this may take a while.
+
+### Cross-Architecture Builds (Optional)
+
+To build for non-native architectures, set `CPU_TARGET` before building:
+
+```bash
+# For ARM binaries
+CPU_TARGET=arm ./build_qemu_support.sh
+
+# For 32-bit binaries on 64-bit systems
+CPU_TARGET=i386 ./build_qemu_support.sh
+
+# For ARM64
+CPU_TARGET=aarch64 ./build_qemu_support.sh
+```
+
+### Static Builds (Optional)
+
+For static linking, set the `STATIC` variable:
+
+```bash
+STATIC=1 ./build_qemu_support.sh
+```
+
+</Steps>
+
+## Basic Usage
+
+Once QEMU mode is built, use the `-Q` flag with afl-fuzz:
+
+```bash
+afl-fuzz -Q -i input_dir -o output_dir -- /path/to/binary @@
+```
+
+### i386 Architecture Note
+
+When targeting i386, the forkserver handshake may fail due to lack of reserved memory. Fix with:
+
+```bash
+export QEMU_RESERVED_VA=0x1000000
+```
+
+### Custom Library Paths
+
+To specify a different library path (e.g., for cross-architecture fuzzing):
+
+```bash
+export QEMU_LD_PREFIX=/path/to/libraries
+```
+
+## Advanced Features
+
+### Deferred Initialization
+
+Move the forkserver to a specific point in execution for significant speed improvements:
+
+```bash
+export AFL_ENTRYPOINT=0x12345678
+```
+
+This allows you to skip initialization code (command line parsing, config loading, etc.) and start fuzzing just before the interesting code.
+
+You can also set an exit point:
+
+```bash
+export AFL_EXITPOINT=0x87654321
+```
+
+Note: `AFL_EXITPOINT` triggers when the **block** containing the address is reached.
+
+### Persistent Mode
+
+QEMU mode supports persistent mode for x86, x86_64, arm, and aarch64, providing significant speed improvements.
+
+For details, see the [persistent mode documentation](../qemu_mode/README.persistent.md).
+
+### Snapshot Mode
+
+As an extension to persistent mode, qemuafl can snapshot and restore memory state:
+
+```bash
+export AFL_QEMU_SNAPSHOT=0x12345678  # Hex address for snapshot entry point
+```
+
+Snapshot mode can restore all writable pages. With the AFL++ snapshot kernel module loaded, it achieves better performance and scaling than fork mode.
+
+### Partial Instrumentation
+
+Instrument only specific address ranges or modules:
+
+```bash
+# Instrument specific ranges
+export AFL_QEMU_INST_RANGES=0x1000-0x2000,libfoo.so
+
+# Exclude specific ranges (takes priority)
+export AFL_QEMU_EXCLUDE_RANGES=0x5000-0x6000,libbar.so
+```
+
+To instrument all libraries (not just the main binary):
+
+```bash
+export AFL_INST_LIBS=1
+```
+
+### CompareCoverage
+
+Enables sub-instrumentation with effects similar to laf-intel:
+
+```bash
+export AFL_PRELOAD=/path/to/libcompcov.so
+export AFL_COMPCOV_LEVEL=2
+```
+
+**Levels**:
+- `AFL_COMPCOV_LEVEL=1`: Instrument comparisons with immediate values/read-only memory
+- `AFL_COMPCOV_LEVEL=2`: Instrument all comparisons and memory comparison functions
+- `AFL_COMPCOV_LEVEL=3`: Additionally instrument floating-point comparisons (experimental)
+
+Supported on x86, x86_64, arm, and aarch64.
+
+<Note>
+CMPLOG mode (below) is recommended over CompareCoverage in most cases.
+</Note>
+
+### CMPLOG Mode
+
+Based on the Redqueen project, CMPLOG learns immediates from CMP instructions and applies them to relevant input locations:
+
+```bash
+afl-fuzz -Q -c /path/to/target -i input_dir -o output_dir -- /path/to/target @@
+```
+
+Available for x86, x86_64, arm, and aarch64.
+
+### Ijon Mode
+
+Transmit information about variable changes to AFL++. Enable with:
+
+```bash
+export AFL_QEMU_IJON=/path/to/ijon.conf
+```
+
+**Configuration format** (one rule per line):
+
+```
+# code_addr, ijon_method, memory_addr_or_register, data_len
+0x40000012c8, ijon_set, rdx, 8
+0x40000012c8, ijon_inc, r10d, 4
+0x4000001300, ijon_max, 0x601050, 8
+```
+
+**Supported methods**: `ijon_max`, `ijon_min`, `ijon_set`, `ijon_inc`
+
+**Debugging**:
+
+```bash
+export AFL_QEMU_DEBUG_MAPS=1
+export AFL_DEBUG=1
+```
+
+### Wine Mode
+
+Fuzz Win32 PE binaries using Wine:
+
+```bash
+afl-fuzz -W -i input_dir -o output_dir -- /path/to/binary.exe @@
+```
+
+Note: Some binaries may require GUI interaction patches.
+
+## Coverage Information
+
+Generate coverage information using the drcov plugin:
+
+<Steps>
+
+### Build Plugins
+
+From the qemuafl directory:
+
+```bash
+make plugins
+```
+
+### Run with Coverage Plugin
+
+```bash
+afl-qemu-trace -plugin qemuafl/build/contrib/plugins/libdrcov.so,arg=filename=/tmp/coverage.drcov.trace <target> <args>
+```
+
+### Analyze Coverage
+
+Load the generated file in tools like:
+- [lighthouse](https://github.com/gaasedelen/lighthouse)
+- [lightkeeper](https://github.com/WorksButNotTested/lightkeeper)
+- [Cartographer](https://github.com/nccgroup/Cartographer)
+
+</Steps>
+
+## Environment Variables Reference
+
+| Variable | Description |
+|----------|-------------|
+| `AFL_ENTRYPOINT` | Address to move forkserver to (deferred init) |
+| `AFL_EXITPOINT` | Address to trigger instance termination |
+| `AFL_QEMU_SNAPSHOT` | Enable snapshot mode at specified address |
+| `AFL_QEMU_INST_RANGES` | Comma-separated list of ranges/modules to instrument |
+| `AFL_QEMU_EXCLUDE_RANGES` | Comma-separated list of ranges/modules to exclude |
+| `AFL_COMPCOV_LEVEL` | Enable CompareCoverage (1-3) |
+| `AFL_QEMU_IJON` | Path to Ijon configuration file |
+| `AFL_QEMU_FORCE_DFL` | Force QEMU to ignore target signal handlers |
+| `AFL_QEMU_DEBUG_MAPS` | Display memory layout |
+| `AFL_INST_LIBS` | Instrument all basic blocks (not just .text) |
+| `QEMU_RESERVED_VA` | Reserved memory for i386 targets |
+| `QEMU_LD_PREFIX` | Custom library path |
+| `QEMU_PLUGIN` | Load QEMU plugin |
+
+## Limitations and Gotchas
+
+<Warning>
+- **Do not mix QEMU mode with ASAN/MSAN**: QEMU doesn't support the "shadow VM" trick and will run out of memory
+- **Not a security boundary**: Binaries can interact with the host OS. Use sandboxing for untrusted binaries
+- **Limited CPU features**: QEMU may not support all CPU features (e.g., full AVX2/FMA3 support may be missing)
+</Warning>
+
+### Workarounds
+
+For CPU feature issues, try:
+- Using binaries built for older CPUs
+- Recompiling with `-march=core2`
+
+### Checksums and Post-Processing
+
+For checksum fixes or test case cleanup, see `afl_custom_post_process` in the custom mutators examples.
+
+## Benchmarking
+
+To fairly compare QEMU instrumentation with afl-clang-fast:
+
+```bash
+CFLAGS="-O3 -funroll-loops" ./configure --disable-shared
+make clean all
+```
+
+Ensure optimization levels and instrumentation scopes match for meaningful comparisons.
+
+## Linking Considerations
+
+- **Static linking required**: Libraries you want to analyze must be statically linked
+- **Dynamic linking for standard libs**: Standard C libraries should be dynamically linked to avoid wasteful instrumentation
+- The instrumentation follows only the `.text` section of the first ELF binary encountered
+- Use `AFL_INST_LIBS=1` to instrument every basic block (not recommended for most cases)
+
+## Alternatives
+
+For static binary rewriting alternatives, see the [fuzzing binary-only targets guide](fuzzing_binary-only_targets.md).
+
+Static rewriting can be faster but is more complex and error-prone as it requires modeling program control flow without execution.

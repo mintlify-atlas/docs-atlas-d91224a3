@@ -1,0 +1,396 @@
+---
+title: "GCC Plugin Mode"
+description: "GCC-based compiler-level instrumentation for AFL++"
+---
+
+## Overview
+
+The GCC plugin provides true compiler-level instrumentation for targets that must be built with GCC rather than LLVM/Clang. It offers similar benefits to LLVM mode but works with the GCC compiler infrastructure.
+
+<Info>
+For LLVM/Clang projects, use [LLVM Mode](/instrumentation/llvm-mode) or [LTO Mode](/instrumentation/lto-mode) instead.
+</Info>
+
+## TL;DR
+
+```bash
+# 1. Check GCC version
+gcc --version
+
+# 2. Install plugin development headers
+sudo apt-get install gcc-11-plugin-dev  # Match your GCC version
+
+# 3. Build AFL++
+make
+
+# 4. Use like regular AFL++
+CC=afl-gcc-fast CXX=afl-g++-fast ./configure
+make
+```
+
+## Benefits
+
+- **Compiler optimizations**: Leverages GCC's optimization capabilities
+- **Better performance**: Up to 2x faster for CPU-bound programs
+- **CPU-independent**: Works on non-x86 architectures (build afl-fuzz with `AFL_NOX86=1`)
+- **GCC-specific targets**: Only option for projects that require GCC
+
+## Requirements
+
+### GCC Version
+
+GCC 4.5.0 or newer with plugin support.
+
+### Plugin Development Headers
+
+Install the plugin development package matching your GCC version:
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install gcc-11-plugin-dev    # For GCC 11
+sudo apt-get install gcc-12-plugin-dev    # For GCC 12
+
+# Check available versions
+apt-cache search gcc-plugin-dev
+```
+
+### Compiler Selection
+
+The plugin must match your GCC version. Set compilers via environment variables:
+
+```bash
+export AFL_CC=gcc-11
+export AFL_CXX=g++-11
+```
+
+<Note>
+If `CC`/`CXX` environment variables are set, they take precedence over `AFL_CC`/`AFL_CXX`.
+</Note>
+
+### Version Check Override
+
+If compiling with a different GCC version than system-installed:
+
+```bash
+export AFL_GCC_DISABLE_VERSION_CHECK=1
+```
+
+## Building
+
+```bash
+cd AFLplusplus
+make
+```
+
+This generates:
+- `afl-gcc-fast` - GCC plugin wrapper for C
+- `afl-g++-fast` - GCC plugin wrapper for C++
+
+<Tip>
+To make the plugin available system-wide, run `make install` after building.
+</Tip>
+
+## Usage
+
+### Basic Compilation
+
+```bash
+export CC=/path/to/afl/afl-gcc-fast
+export CXX=/path/to/afl/afl-g++-fast
+./configure [...options...]
+make
+```
+
+### With Specific GCC Version
+
+```bash
+export AFL_CC=gcc-12
+export AFL_CXX=g++-12
+CC=afl-gcc-fast CXX=afl-g++-fast ./configure
+make
+```
+
+## Environment Variables
+
+The GCC plugin supports several AFL++ environment variables:
+
+<ParamField path="AFL_CC" type="path">
+  Specify the GCC compiler to use (e.g., `gcc-11`, `/usr/bin/gcc-12`).
+  
+  ```bash
+  export AFL_CC=gcc-11
+  ```
+</ParamField>
+
+<ParamField path="AFL_CXX" type="path">
+  Specify the G++ compiler to use (e.g., `g++-11`, `/usr/bin/g++-12`).
+  
+  ```bash
+  export AFL_CXX=g++-11
+  ```
+</ParamField>
+
+<ParamField path="AFL_INST_RATIO" type="integer (1-100)">
+  Instrument only a percentage of branches (default: 100%).
+  
+  ```bash
+  export AFL_INST_RATIO=50  # Instrument 50% of branches
+  ```
+</ParamField>
+
+<ParamField path="AFL_USE_ASAN" type="boolean">
+  Enable AddressSanitizer instrumentation.
+  
+  ```bash
+  export AFL_USE_ASAN=1
+  ```
+</ParamField>
+
+<ParamField path="AFL_HARDEN" type="boolean">
+  Enable hardening compile-time options.
+  
+  ```bash
+  export AFL_HARDEN=1
+  ```
+</ParamField>
+
+<ParamField path="AFL_DONT_OPTIMIZE" type="boolean">
+  Disable optimization passes.
+  
+  ```bash
+  export AFL_DONT_OPTIMIZE=1
+  ```
+</ParamField>
+
+<ParamField path="AFL_GCC_CMPLOG" type="boolean">
+  Enable CmpLog instrumentation for Redqueen-style mutations.
+  
+  ```bash
+  export AFL_GCC_CMPLOG=1
+  ```
+  
+  See [CmpLog documentation](/instrumentation/cmplog) for details.
+</ParamField>
+
+<ParamField path="AFL_GCC_DISABLE_VERSION_CHECK" type="boolean">
+  Disable GCC version mismatch checks.
+  
+  ```bash
+  export AFL_GCC_DISABLE_VERSION_CHECK=1
+  ```
+</ParamField>
+
+## Features
+
+### Deferred Initialization
+
+Start the forkserver after expensive initialization:
+
+```c
+#ifdef __AFL_HAVE_MANUAL_CONTROL
+  __AFL_INIT();
+#endif
+
+// Forkserver starts here
+// Fuzzing loop follows...
+```
+
+See [Persistent Mode - Deferred Initialization](/instrumentation/persistent-mode#deferred-initialization) for details.
+
+### Persistent Mode
+
+Fuzz multiple times in a single process for 10-20x performance:
+
+```c
+while (__AFL_LOOP(1000)) {
+  // Read input
+  // Fuzz target
+  // Reset state
+}
+```
+
+See [Persistent Mode documentation](/instrumentation/persistent-mode) for complete details.
+
+### Selective Instrumentation
+
+Instrument only specific files using allowlist/denylist:
+
+```bash
+export AFL_LLVM_ALLOWLIST=allowlist.txt
+# or
+export AFL_LLVM_DENYLIST=denylist.txt
+```
+
+See [Instrument List documentation](README.instrument_list.md) for details.
+
+### CMPLOG Support
+
+The GCC plugin supports CmpLog for Redqueen-style mutations:
+
+```bash
+# Build two versions
+# 1. Regular instrumented binary
+CC=afl-gcc-fast ./configure
+make
+cp ./program ./program.afl
+
+# 2. CmpLog instrumented binary
+make clean
+export AFL_GCC_CMPLOG=1
+CC=afl-gcc-fast ./configure
+make
+cp ./program ./program.cmplog
+
+# Fuzz with both
+afl-fuzz -i input -o output -c ./program.cmplog -- ./program.afl @@
+```
+
+See [CmpLog documentation](/instrumentation/cmplog) for details.
+
+## Performance
+
+| Binary Type | Expected Gain |
+|-------------|---------------|
+| CPU-bound programs | Up to 2x faster |
+| Fast binaries | ~10% faster |
+| Process-creation bound | Minimal gain |
+
+<Note>
+Performance gains are comparable to LLVM mode but may vary based on GCC optimizations.
+</Note>
+
+## When to Use GCC Plugin
+
+<Tabs>
+  <Tab title="Use GCC Plugin When">
+    - Target **requires GCC** (doesn't build with Clang)
+    - Working on **GCC-specific** code
+    - Target uses **GCC extensions**
+    - LLVM/Clang not available on platform
+  </Tab>
+  <Tab title="Use LLVM Mode When">
+    - Target builds with Clang
+    - Want **LTO mode** (collision-free coverage)
+    - Need **better performance** (10-25% faster)
+    - Want **more instrumentation options**
+  </Tab>
+</Tabs>
+
+## Comparison with Other Modes
+
+| Feature | GCC Plugin | LLVM Mode | LTO Mode |
+|---------|------------|-----------|----------|
+| Compiler | GCC | Clang/LLVM | Clang/LLVM |
+| Performance | Good | Better | Best |
+| Collision-free | No | No | Yes |
+| Persistent mode | Yes | Yes | Yes |
+| CmpLog | Yes | Yes | Yes |
+| N-Gram coverage | No | Yes | Yes |
+| Context-sensitive | No | Yes | Yes |
+| AFL_INST_RATIO | Yes | No | No |
+
+## Troubleshooting
+
+### Plugin Headers Not Found
+
+```
+Error: GCC plugin headers not found
+```
+
+**Solution**: Install matching plugin-dev package:
+
+```bash
+# Find your GCC version
+gcc --version
+
+# Install matching headers
+sudo apt-get install gcc-$(gcc -dumpversion | cut -d. -f1)-plugin-dev
+```
+
+### Version Mismatch
+
+```
+Error: GCC plugin version mismatch
+```
+
+**Solution**: Use matching GCC version or disable check:
+
+```bash
+export AFL_GCC_DISABLE_VERSION_CHECK=1
+```
+
+### Compilation Fails
+
+If the target doesn't compile:
+
+1. Verify it builds with regular GCC:
+   ```bash
+   CC=gcc CXX=g++ ./configure && make
+   ```
+
+2. Check GCC version compatibility:
+   ```bash
+   gcc --version
+   ```
+
+3. Set compiler explicitly:
+   ```bash
+   export AFL_CC=gcc-11
+   export AFL_CXX=g++-11
+   ```
+
+## Example: Complete Build
+
+```bash
+# Install dependencies
+sudo apt-get install gcc-11 g++-11 gcc-11-plugin-dev
+
+# Build AFL++
+cd AFLplusplus
+make clean all
+sudo make install
+
+# Set environment
+export AFL_CC=gcc-11
+export AFL_CXX=g++-11
+
+# Instrument target
+cd /path/to/target
+make clean
+CC=afl-gcc-fast CXX=afl-g++-fast ./configure
+make
+
+# Optional: Build with CMPLOG
+make clean
+export AFL_GCC_CMPLOG=1
+CC=afl-gcc-fast ./configure
+make
+cp target target.cmplog
+
+# Fuzz
+afl-fuzz -i input -o output -c target.cmplog -- target @@
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Persistent Mode" icon="arrows-spin" href="/instrumentation/persistent-mode">
+    Achieve 10-20x performance with persistent mode fuzzing
+  </Card>
+  <Card title="CmpLog" icon="code-compare" href="/instrumentation/cmplog">
+    Enable Redqueen-style mutations
+  </Card>
+  <Card title="LLVM Mode" icon="bolt" href="/instrumentation/llvm-mode">
+    Switch to LLVM for better performance (if target supports it)
+  </Card>
+  <Card title="Selective Instrumentation" icon="list" href="/instrumentation/llvm-mode">
+    Instrument only specific parts of code
+  </Card>
+</CardGroup>
+
+## Related Documentation
+
+- [Environment Variables](/advanced/environment-variables)
+- [LLVM Mode](/instrumentation/llvm-mode)
+- [Persistent Mode](/instrumentation/persistent-mode)
+- [CmpLog](/instrumentation/cmplog)

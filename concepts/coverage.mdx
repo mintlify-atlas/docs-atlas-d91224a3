@@ -1,0 +1,399 @@
+---
+title: "Coverage Tracking"
+description: "Understanding how AFL++ tracks code coverage, collision-free coverage, and NeverZero counters"
+---
+
+## How Coverage Tracking Works
+
+Coverage tracking is the core mechanism that makes AFL++ an intelligent, feedback-driven fuzzer. During execution, the instrumented target program records which code paths were taken, and AFL++ uses this information to decide which inputs are interesting and worth mutating further.
+
+### The Coverage Map (Bitmap)
+
+AFL++ uses a shared memory region called the **coverage map** or **bitmap** to track execution paths. This is a fixed-size array (default: 64KB) where each byte represents an edge in the program's control flow graph.
+
+<Info>
+The coverage map is allocated in shared memory between afl-fuzz and the target process, enabling extremely fast communication with minimal syscall overhead.
+</Info>
+
+### Edge Coverage
+
+Unlike simple code coverage tools that track which lines or blocks were executed, AFL++ tracks **edges** (transitions between basic blocks). This provides much richer information about program behavior.
+
+The instrumentation code inserted at each edge updates the map:
+
+```c
+cur_location = <edge_id>;
+shared_mem[cur_location ^ prev_location] += 1;
+prev_location = cur_location >> 1;
+```
+
+This approach:
+
+- Captures the control flow between blocks
+- Detects loop iterations and recursive calls
+- Identifies unique execution sequences
+- Uses XOR for compact representation
+
+<Tip>
+The right-shift operation on `prev_location` ensures that the tuple (A→B) produces a different map entry than (B→A), improving path differentiation.
+</Tip>
+
+### Hit Counts
+
+AFL++ doesn't just track whether an edge was hit, but **how many times** it was executed. The 8-bit counters are grouped into buckets:
+
+- 1 hit
+- 2 hits
+- 3 hits
+- 4-7 hits
+- 8-15 hits
+- 16-31 hits
+- 32-127 hits
+- 128+ hits
+
+When an input causes a different hit count bucket for any edge, it's considered interesting and added to the queue.
+
+<Info>
+Hit count buckets help AFL++ detect behavioral differences even when the same code paths are executed. For example, a loop running 5 times vs 100 times may expose different bugs.
+</Info>
+
+## Collision-Free Coverage
+
+One of the biggest problems with traditional AFL instrumentation is **edge collisions** - when multiple edges map to the same position in the coverage bitmap.
+
+### The Collision Problem
+
+With random edge IDs assigned during compilation:
+
+- **64KB map with 256 edges**: ~1 collision
+- **64KB map with 10,000 edges**: ~750 collisions
+- **64KB map with 50,000 edges**: ~18,000 collisions
+
+Each collision means AFL++ cannot distinguish between different edges, causing it to miss new paths.
+
+<Warning>
+Edge collisions significantly degrade fuzzing efficiency. A program with heavy collisions may appear to have saturated coverage when many paths remain unexplored.
+</Warning>
+
+### PCGUARD Mode (LLVM)
+
+LLVM mode with PCGUARD instrumentation (LLVM 9+) provides collision-free coverage:
+
+```bash
+# PCGUARD is the default in LLVM mode
+afl-clang-fast target.c
+```
+
+PCGUARD assigns IDs sequentially during compilation, ensuring each edge gets a unique ID within the map size.
+
+**Advantages**:
+- No collisions within a single compilation unit
+- Faster execution than classic AFL instrumentation
+- Better path discovery
+- Works automatically with afl-clang-fast
+
+### LTO Mode
+
+**Link-Time Optimization (LTO) mode** provides the best collision-free coverage by instrumenting at link time when all compilation units are available:
+
+```bash
+afl-clang-lto target.c
+```
+
+LTO mode:
+- Guarantees collision-free coverage across the entire program
+- Assigns optimal edge IDs during linking
+- Provides 10-25% performance boost
+- Reports exact collision savings
+
+Example output:
+```
+[+] Instrumented 12071 locations with no collisions (on average 1046 
+    collisions would be in afl-clang-fast CLASSIC) (non-hardened mode).
+```
+
+<Tip>
+For serious fuzzing campaigns, always use LTO mode (afl-clang-lto) if your target can be built with LLVM 12+. The collision-free coverage significantly improves fuzzing effectiveness.
+</Tip>
+
+## NeverZero Counters
+
+### The Zero-Wrap Problem
+
+In large or iterative programs, 8-bit edge counters can overflow. When a counter wraps from 255 back to 0, AFL++ loses the information that this edge was executed.
+
+Consider a loop that runs 256 times:
+
+```
+Counter: 1, 2, 3, ... 254, 255, 0  ← Problem!
+```
+
+If execution ends with the counter at 0, AFL++ thinks this edge was never hit, missing potentially interesting behavior.
+
+### How NeverZero Works
+
+**NeverZero counters** prevent wrapping to zero. When a counter would overflow from 255, it jumps to 1 instead:
+
+```
+Counter: 1, 2, 3, ... 254, 255, 1, 2, ...  ✓ Always non-zero!
+```
+
+Implementation (one instruction per edge):
+
+```c
+shared_mem[index]++;
+if (shared_mem[index] == 0) shared_mem[index] = 1;
+```
+
+<Info>
+NeverZero improves path discovery at minimal cost. Testing shows it's superior to saturated counters (which cap at 255) for finding new paths.
+</Info>
+
+### NeverZero Availability
+
+**Default enabled**:
+- LLVM mode with LLVM 9+
+- LTO mode with LLVM 11+
+- QEMU mode
+- Unicorn mode
+
+**Manual enable** (LLVM &lt;9 or when using thread-safe counters):
+
+```bash
+export AFL_LLVM_NOT_ZERO=1
+afl-clang-fast target.c
+```
+
+**Disable** (for small performance boost if target has few loops):
+
+```bash
+export AFL_LLVM_SKIP_NEVERZERO=1
+afl-clang-fast target.c
+```
+
+<Note>
+Thread-safe instrumentation (`AFL_LLVM_THREADSAFE_INST=1`) disables NeverZero by default for performance reasons.
+</Note>
+
+## Coverage Map Analysis
+
+### Map Density
+
+The AFL++ status screen shows map density:
+
+```
++--------------------------------------+
+|    map density : 10.15% / 29.07%     |
+| count coverage : 4.03 bits/tuple     |
++--------------------------------------+
+```
+
+**Map density**: Percentage of bitmap entries that have been hit
+- First number: Current input
+- Second number: Entire corpus
+
+<Warning>
+**Too low (&lt;200 edges)**: Target may be too simple, not instrumented properly, or bailing out early
+
+**Too high (&gt;70%)**: High collision risk. Recompile with `AFL_INST_RATIO=10` to reduce instrumentation density
+</Warning>
+
+**Count coverage**: Hit count variability across edges
+- `1.00`: Every edge always hit the same number of times (low diversity)
+- `8.00`: All hit count buckets used (high diversity)
+
+Higher count coverage indicates better exploration of different program states.
+
+### Measuring Coverage
+
+Use `afl-showmap` to analyze coverage:
+
+```bash
+# Show coverage for single input
+afl-showmap -o coverage.txt -- ./target input.txt
+
+# Analyze entire corpus
+afl-showmap -C -i corpus_dir -o /dev/null -- ./target @@
+```
+
+Example output:
+```
+[*] Target map size: 9960
+[+] Processed 7849 input files.
+[+] Captured 4331 tuples in '/dev/null'.
+[+] A coverage of 4331 edges were achieved out of 9960 existing 
+    (43.48%) with 7849 input files.
+```
+
+This shows:
+- Total instrumented edges: 9,960
+- Edges covered: 4,331 (43.48%)
+- Test cases in corpus: 7,849
+
+<Tip>
+You'll rarely achieve 100% coverage. Most programs have mutually exclusive code paths (different command-line options, file formats, etc.) that require separate fuzzing campaigns.
+</Tip>
+
+## Advanced Coverage Modes
+
+### Context-Sensitive Coverage
+
+Augments edge coverage with calling context:
+
+```c
+map[current_location ^ previous_location >> 1 ^ hash_callstack] += 1
+```
+
+Enable with:
+
+```bash
+export AFL_LLVM_INSTRUMENT=CTX
+afl-clang-fast target.c
+```
+
+**Benefits**:
+- Distinguishes the same function called from different callers
+- Discovers context-dependent bugs
+- Better path exploration in complex codebases
+
+**Drawbacks**:
+- Requires larger map (increase `MAP_SIZE_POW2` to 18-20)
+- More map collisions if map is too small
+
+### N-Gram Coverage
+
+Tracks sequences of N edges instead of single edges:
+
+```c
+map[current_location ^ prev_location[0] >> 1 ^ prev_location[1] >> 1 
+    ^ ... ^ prev_location[N-1] >> 1] += 1
+```
+
+Enable with:
+
+```bash
+export AFL_LLVM_INSTRUMENT=NGRAM-4  # Track sequences of 4 edges
+afl-clang-fast target.c
+```
+
+**Benefits**:
+- Captures longer execution sequences
+- Proven effective in research
+- Detects order-dependent behavior
+
+**Drawbacks**:
+- Explodes map size (use `MAP_SIZE_POW2=20` or larger)
+- Higher collision risk without large maps
+- More memory usage
+
+<Info>
+N-gram coverage with N=2, 4, or 8 has shown improvements in fuzzing effectiveness, particularly for targets with complex state machines.
+</Info>
+
+### Caller Coverage
+
+Lighter alternative to context-sensitive coverage, only tracks the immediate caller:
+
+```c
+map[current_location ^ previous_location >> 1 ^ previous_callee_ID] += 1
+```
+
+Enable with:
+
+```bash
+export AFL_LLVM_INSTRUMENT=CALLER
+afl-clang-fast target.c
+```
+
+## Optimizing Coverage Map Size
+
+The default map size is 64KB (`MAP_SIZE_POW2=16` in config.h). For different targets, you may need to adjust:
+
+**Small targets (&lt;5,000 edges)**:
+```c
+#define MAP_SIZE_POW2 15  // 32KB
+```
+
+**Large targets or advanced coverage modes**:
+```c
+#define MAP_SIZE_POW2 18  // 256KB - for context/caller coverage
+#define MAP_SIZE_POW2 20  // 1MB - for n-gram coverage
+```
+
+<Note>
+Larger maps use more memory. With many parallel instances, this can add up. Balance map size against available RAM.
+</Note>
+
+## Thread Safety
+
+By default, AFL++ coverage counters are **not thread-safe** for performance. In multi-threaded programs, concurrent updates may lose some hits.
+
+### Thread-Safe Counters
+
+Enable atomic counter updates:
+
+```bash
+export AFL_LLVM_THREADSAFE_INST=1
+afl-clang-fast target.c
+```
+
+**Tradeoffs**:
+- Better precision in multi-threaded apps
+- Slight instrumentation overhead
+- Disables NeverZero for performance
+
+### Stability Metric
+
+AFL++ shows a "stability" percentage:
+
+```
++---------------------+
+| stability : 100.00% |
++---------------------+
+```
+
+This measures how consistently the same input produces the same coverage.
+
+- **100%**: Perfect (deterministic execution)
+- **90-100%** (purple): Good, minor variations acceptable
+- **&lt;90%** (red): Problematic, causes include:
+  - Uninitialized memory
+  - Multithreading with race conditions
+  - Random number generation
+  - Timestamp dependencies
+  - External state (temp files, shared memory)
+
+<Tip>
+Low stability (&lt;90%) wastes fuzzing effort. Use thread-safe instrumentation, remove sources of randomness, or use deterministic alternatives like GNU Pth for threading.
+</Tip>
+
+## Coverage-Guided Corpus Minimization
+
+AFL++ automatically minimizes the corpus during fuzzing, but you can manually minimize:
+
+### afl-cmin
+
+Removes redundant inputs that don't add coverage:
+
+```bash
+afl-cmin -i raw_corpus -o minimized_corpus -- ./target @@
+```
+
+### afl-tmin
+
+Minimizes individual test cases:
+
+```bash
+afl-tmin -i large_input.txt -o small_input.txt -- ./target @@
+```
+
+<Info>
+Minimized corpus = faster fuzzing. Smaller inputs execute faster and allow more iterations per second.
+</Info>
+
+## Next Steps
+
+- Explore [mutation strategies](/concepts/mutations) that use coverage feedback
+- Learn about [instrumentation modes](/concepts/instrumentation)
+- Check [performance optimization tips](/guides/best-practices)
+- Read about [parallel fuzzing](/advanced/parallel-fuzzing) to scale coverage exploration

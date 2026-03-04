@@ -1,0 +1,372 @@
+---
+title: "LTO Mode"
+description: "Collision-free instrumentation at link time with afl-clang-lto"
+---
+
+## TL;DR
+
+1. **Best performance**: 10-25% faster than regular LLVM mode with guaranteed collision-free coverage
+2. **Requirements**: LLVM 12 or newer
+3. **Compatible with**: COMPCOV, CMPLOG, and instrument file listing
+4. **Setup**: Set `AR=llvm-ar RANLIB=llvm-ranlib AS=llvm-as` if issues arise
+5. **Linker**: Some targets need `LD=afl-clang-lto`, others need `LD=afl-ld-lto`
+
+## Overview
+
+LTO (Link-Time Optimization) mode provides collision-free edge coverage by instrumenting at link time when all compilation units are available. This solves the major problem of random basic block IDs causing edge collisions in the coverage map.
+
+### The Collision Problem
+
+<Warning>
+This issue is **severely underestimated** in the fuzzing community!
+</Warning>
+
+With the standard 64KB map (2^16):
+- At just **256 instrumented blocks**: 1 collision on average
+- Typical targets have **10,000-50,000 blocks**: 750-18,000 collisions!
+- Result: Missed paths and degraded fuzzing efficiency
+
+### How LTO Mode Works
+
+1. Compile source files in LTO (Link-Time Optimization) mode
+2. At link time, collect all LTO files
+3. Instrument with non-colliding edge IDs
+4. Use LLVM's `-fsanitize=coverage` edge coverage style
+
+### Benefits
+
+- **10-25% faster** than regular LLVM mode
+- **Guaranteed collision-free** edge coverage
+- **Better path discovery** through accurate coverage
+- **AUTODICTIONARY**: Automatic dictionary extraction
+
+### Tradeoffs
+
+- **Longer compile times**, especially for binaries linked to instrumented libraries
+- Sometimes **much** longer for complex projects
+
+## Requirements
+
+<Info>
+LTO mode requires **LLVM 12 or newer**. LLVM 13-19 recommended.
+</Info>
+
+### Installing LLVM
+
+The best way to install LLVM is via [https://apt.llvm.org/](https://apt.llvm.org/):
+
+```bash
+# For LLVM 19
+wget https://apt.llvm.org/llvm.sh
+chmod +x llvm.sh
+sudo ./llvm.sh 19 all
+```
+
+LLVM 13-19 is available in most current Linux repositories:
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install llvm-19 clang-19 llvm-19-dev
+
+# Fedora/RHEL
+sudo dnf install llvm19 clang19
+```
+
+## Building AFL++ with LTO Support
+
+```bash
+cd ~/AFLplusplus
+export LLVM_CONFIG=llvm-config-19
+make
+sudo make install
+```
+
+## Usage
+
+### Basic Compilation
+
+Use `afl-clang-lto` exactly like `afl-clang-fast`:
+
+```bash
+CC=afl-clang-lto CXX=afl-clang-lto++ ./configure
+make
+```
+
+### With Required Build Tools
+
+Many targets require LTO-compatible build tools:
+
+```bash
+CC=afl-clang-lto \
+CXX=afl-clang-lto++ \
+RANLIB=llvm-ranlib \
+AR=llvm-ar \
+AS=llvm-as \
+./configure --disable-shared
+make
+```
+
+<Note>
+You may need to add version suffixes like `llvm-ar-19`, `llvm-ranlib-19`, etc.
+</Note>
+
+### Setting the Linker
+
+Some targets also need the linker set. Try both options:
+
+```bash
+# Option 1
+LD=afl-clang-lto CC=afl-clang-lto ./configure
+
+# Option 2
+LD=afl-ld-lto CC=afl-clang-lto ./configure
+```
+
+## Example Build Output
+
+From a libtiff build:
+
+```
+libtool: link: afl-clang-lto -g -O2 -Wall -W -o thumbnail thumbnail.o  ../libtiff/.libs/libtiff.a ../port/.libs/libport.a -llzma -ljbig -ljpeg -lz -lm
+afl-clang-lto++2.63d by Marc "vanHauser" Heuse <mh@mh-sec.de> in mode LTO
+afl-llvm-lto++2.63d by Marc "vanHauser" Heuse <mh@mh-sec.de>
+AUTODICTIONARY: 11 strings found
+[+] Instrumented 12071 locations with no collisions (on average 1046 collisions would be in afl-clang-fast CLASSIC) (non-hardened mode).
+```
+
+<Tip>
+Note the collision comparison: **0 vs 1046** collisions!
+</Tip>
+
+## Compatible Features
+
+LTO mode works with these AFL++ features:
+
+### Instrument File Listing
+
+```bash
+export AFL_LLVM_ALLOWLIST=allowlist.txt
+# or
+export AFL_LLVM_DENYLIST=denylist.txt
+```
+
+See [Instrument List documentation](README.instrument_list.md) for details.
+
+### LAF-Intel / COMPCOV
+
+```bash
+export AFL_LLVM_LAF_ALL=1
+# or individual options
+export AFL_LLVM_LAF_SPLIT_SWITCHES=1
+export AFL_LLVM_LAF_TRANSFORM_COMPARES=1
+```
+
+See [LAF-Intel documentation](/instrumentation/laf-intel) for details.
+
+## AUTODICTIONARY Feature
+
+<Info>
+LTO mode automatically generates dictionaries from string comparisons during compilation!
+</Info>
+
+The dictionary is:
+- **Automatically extracted** from string compare operations
+- **Embedded** in the target binary
+- **Transferred** to afl-fuzz on startup
+- **Improves coverage** by 5-10% statistically
+
+### Disabling AUTODICTIONARY
+
+If needed, disable it when starting afl-fuzz:
+
+```bash
+export AFL_NO_AUTODICT=1
+afl-fuzz -i input -o output -- ./target
+```
+
+## Environment Variables
+
+<ParamField path="AFL_LLVM_MAP_ADDR" type="hex address">
+  Set a fixed shared memory map address for additional speed. Recommended: `0x10000`
+  
+  ```bash
+  export AFL_LLVM_MAP_ADDR=0x10000
+  ```
+  
+  <Warning>
+  May crash targets with early constructors, ifuncs, or deferred forkserver. Change address if issues occur.
+  </Warning>
+</ParamField>
+
+<ParamField path="AFL_LLVM_DOCUMENT_IDS" type="file path">
+  Document which edge ID was assigned to which function.
+  
+  ```bash
+  export AFL_LLVM_DOCUMENT_IDS=edge_ids.txt
+  ```
+  
+  Helps identify:
+  - Functions with variable bytes
+  - Functions touched by specific inputs
+</ParamField>
+
+<ParamField path="AFL_NO_AUTODICT" type="boolean">
+  Disable the autodictionary feature at runtime.
+  
+  ```bash
+  export AFL_NO_AUTODICT=1
+  ```
+</ParamField>
+
+### Shared Library Instrumentation
+
+<Warning>
+**Highly discouraged!** Compile to static libraries instead.
+</Warning>
+
+If you must instrument shared libraries:
+
+<ParamField path="AFL_LLVM_LTO_DONTWRITEID" type="boolean">
+  Set during shared library compilation.
+  
+  ```bash
+  export AFL_LLVM_LTO_DONTWRITEID=1
+  ```
+</ParamField>
+
+<ParamField path="AFL_LLVM_LTO_STARTID" type="integer">
+  Set to the cumulative edge count of all previously compiled shared libraries.
+  
+  ```bash
+  # First library
+  export AFL_LLVM_LTO_STARTID=0
+  # (reports 1000 edges instrumented)
+  
+  # Second library
+  export AFL_LLVM_LTO_STARTID=1000
+  # (reports 500 edges instrumented)
+  
+  # Final program
+  export AFL_LLVM_LTO_STARTID=1500
+  unset AFL_LLVM_LTO_DONTWRITEID
+  ```
+</ParamField>
+
+## Troubleshooting
+
+### Error: "archive has no index"
+
+```
+/bin/ld: libfoo.a: error adding symbols: archive has no index; run ranlib to add one
+```
+
+**Solution**: Use LLVM tools instead of GNU tools:
+
+```bash
+AR=llvm-ar RANLIB=llvm-ranlib CC=afl-clang-lto CXX=afl-clang-lto++ ./configure --disable-shared
+make
+```
+
+### Error: "assembler command failed"
+
+**Solution**: Set `AS=llvm-as`:
+
+```bash
+AS=llvm-as AR=llvm-ar RANLIB=llvm-ranlib CC=afl-clang-lto ./configure
+```
+
+### Compilation Failures
+
+Test if the issue is with LTO or AFL++:
+
+```bash
+CC=clang-19 \
+CXX=clang++-19 \
+CFLAGS="-flto=full" \
+CXXFLAGS="-flto=full" \
+./configure
+make
+```
+
+If this succeeds but afl-clang-lto fails, [report the issue](https://github.com/AFLplusplus/AFLplusplus/issues/226).
+
+## Complex Target Examples
+
+### Example: ffmpeg
+
+```bash
+# Step 1: Run configure
+./configure --enable-lto --disable-shared --disable-inline-asm
+
+# Step 2: Edit ./ffbuild/config.mak
+# Change the following lines:
+CC=afl-clang-lto
+CXX=afl-clang-lto++
+AS=llvm-as
+LD=afl-clang-lto++
+DEPCC=afl-clang-lto
+DEPAS=afl-clang-lto++
+AR=llvm-ar
+AR_CMD=llvm-ar
+NM_CMD=llvm-nm -g
+RANLIB=llvm-ranlib -D
+
+# Step 3: Build
+make
+```
+
+### Example: WebKit jsc
+
+```bash
+# Step 1: Checkout
+svn checkout https://svn.webkit.org/repository/webkit/trunk WebKit
+cd WebKit
+
+# Step 2: Fix build environment
+mkdir -p WebKitBuild/Release
+cd WebKitBuild/Release
+ln -s ../../../../../usr/bin/llvm-ar-12 llvm-ar-12
+ln -s ../../../../../usr/bin/llvm-ranlib-12 llvm-ranlib-12
+cd ../..
+
+# Step 3: Build
+Tools/Scripts/build-jsc --jsc-only --cli \
+  --cmakeargs="-DCMAKE_AR='llvm-ar-12' \
+               -DCMAKE_RANLIB='llvm-ranlib-12' \
+               -DCMAKE_CC=afl-clang-lto \
+               -DCMAKE_CXX=afl-clang-lto++ \
+               -DENABLE_STATIC_JSC=ON"
+```
+
+## Performance Comparison
+
+| Mode | Speed | Collisions | Coverage |
+|------|-------|------------|----------|
+| afl-clang-fast | Baseline | 750-18,000 | Degraded |
+| afl-clang-lto | +10-25% | 0 | Optimal |
+| + LTO_MAP_ADDR | +2-5% more | 0 | Optimal |
+
+## History
+
+LTO mode development timeline:
+- **Summer 2019**: Initial concept by hexcoder-
+- **January 2020**: First implementation via opt + custom linker
+- **Solution breakthrough**: domenukk proposed edge splitting with incremental counters
+- **LLVM 12+**: Native pass loading in linker solved all previous issues
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Persistent Mode" icon="arrows-spin" href="/instrumentation/persistent-mode">
+    Combine with persistent mode for maximum performance
+  </Card>
+  <Card title="CmpLog" icon="code-compare" href="/instrumentation/cmplog">
+    Add CmpLog for Redqueen-style mutations
+  </Card>
+  <Card title="LAF-Intel" icon="split" href="/instrumentation/laf-intel">
+    Split complex comparisons for better coverage
+  </Card>
+  <Card title="LLVM Mode" icon="bolt" href="/instrumentation/llvm-mode">
+    Fall back to regular LLVM mode if LTO doesn't work
+  </Card>
+</CardGroup>

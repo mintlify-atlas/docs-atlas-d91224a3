@@ -1,0 +1,450 @@
+---
+title: "Mutation Strategies"
+description: "Understanding AFL++'s mutation strategies, deterministic vs havoc stages, and power schedules"
+---
+
+## Mutation Overview
+
+Mutation is the process of modifying existing inputs to create new test cases. AFL++ uses a sophisticated combination of **deterministic** and **random** mutation strategies, guided by coverage feedback, to efficiently explore program behavior.
+
+Unlike purely random fuzzing, AFL++'s mutations are:
+
+- **Feedback-driven**: Mutations that discover new paths are prioritized
+- **Balanced**: Combines proven fuzzing strategies in optimal proportions
+- **Adaptive**: Adjusts mutation intensity based on input characteristics
+- **Research-backed**: Incorporates techniques from academic fuzzing research
+
+<Info>
+AFL++'s mutation strategies are the result of extensive research and testing. The "balanced and well-researched variety" of mutations is key to its effectiveness.
+</Info>
+
+## Mutation Stages
+
+When AFL++ processes a test case from the queue, it goes through several mutation stages:
+
+### Stage Progression
+
+1. **Calibration** - Analyze execution path and establish baseline
+2. **Trimming** - Minimize input size while preserving behavior
+3. **Deterministic stages** - Systematic bit/byte modifications (if enabled)
+4. **Havoc** - Stacked random mutations
+5. **Splicing** - Combine two inputs (after first full queue cycle)
+
+<Tip>
+You can see the current stage in the AFL++ status screen under "Stage progress". Understanding which stage is running helps diagnose fuzzing behavior.
+</Tip>
+
+## Deterministic Stages
+
+Deterministic mutations systematically walk through the input, applying predictable transformations. These stages are **disabled by default** in modern AFL++ because they're not as efficient as random mutations for most targets.
+
+<Note>
+Deterministic fuzzing is disabled by default. Enable with `-D` flag if needed, but expect slower overall progress in most cases.
+</Note>
+
+### Bitflip Operations
+
+Flip bits in the input with varying lengths and step sizes:
+
+- **bitflip 1/1**: Flip each bit individually (walk with 1-bit increment)
+- **bitflip 2/1**: Flip 2 consecutive bits at a time
+- **bitflip 4/1**: Flip 4 consecutive bits at a time
+- **bitflip 8/8**: Flip entire bytes (walk with 8-bit increment)
+- **bitflip 16/8**: Flip 2-byte values (walk with 8-bit increment)
+- **bitflip 32/8**: Flip 4-byte values (walk with 8-bit increment)
+
+```
+Original: 01101100
+bitflip 1/1, position 0: 11101100
+bitflip 1/1, position 1: 00101100
+bitflip 2/1, position 0: 10101100
+...
+```
+
+### Arithmetic Operations
+
+Add or subtract small integers to 8-bit, 16-bit, and 32-bit values:
+
+- **arith 8/8**: Modify bytes by adding/subtracting 1-35
+- **arith 16/8**: Modify 16-bit values (both endianness)
+- **arith 32/8**: Modify 32-bit values (both endianness)
+
+```
+Byte value: 0x42 (66)
+arith 8/8: Try 67, 65, 68, 64, ... 101, 31
+```
+
+<Info>
+Arithmetic mutations help bypass length checks, loop counters, and simple range validations.
+</Info>
+
+### Interesting Values
+
+Overwrite values with known "interesting" constants that commonly trigger edge cases:
+
+- **interest 8/8**: Replace bytes with: 0, 1, 16, 32, 64, 100, 127, -1, -128, etc.
+- **interest 16/8**: Replace 16-bit values with: 0, 128, 255, 256, 512, 1000, 1024, 4096, 32767, -32768, -129, -1, etc.
+- **interest 32/8**: Replace 32-bit values with: 0, 1, 32768, 65535, 65536, 100000, 2147483647, -2147483648, etc.
+
+```
+# Common interesting values
+0x00, 0x01, 0x7F, 0xFF          # 8-bit boundaries
+0x8000, 0xFFFF                   # 16-bit boundaries  
+0x80000000, 0xFFFFFFFF           # 32-bit boundaries
+```
+
+### Dictionary Operations
+
+If a dictionary is provided (via `-x` or auto-generated), AFL++ tries injecting dictionary terms:
+
+- **extras (over)**: Overwrite portions of input with dictionary entries
+- **extras (insert)**: Insert dictionary entries, shifting remaining data
+
+Dictionaries can come from:
+- User-supplied files (`-x dictionary.txt`)
+- Auto-generated during compilation (LTO mode AUTODICTIONARY)
+- Extracted at runtime (`AFL_LLVM_DICT2FILE`)
+
+<Tip>
+Dictionaries significantly improve fuzzing effectiveness for structured formats. AFL++ includes dictionaries for common formats in the `dictionaries/` directory.
+</Tip>
+
+## Random Mutation Stages
+
+### Havoc Stage
+
+The **havoc stage** is where AFL++ shines. It applies stacked random mutations in a single pass, creating highly diverse inputs:
+
+**Havoc operations include**:
+
+- Bit flips at random positions
+- Byte flips at random positions
+- Setting bytes/words/dwords to random or interesting values
+- Adding/subtracting random values from bytes/words/dwords
+- Deleting blocks of bytes
+- Duplicating blocks (memcpy to another location)
+- Overwriting blocks with random bytes
+- Inserting blocks of random bytes
+- Dictionary injection (if dictionary available)
+
+```
+Input:  "GET /index.html HTTP/1.1\r\n"
+         ↓ havoc: flip bit, delete block, insert random bytes
+Output: "GUT \x9e\x2f]dex.html HTTP/1.1\r\n"
+```
+
+The number of stacked mutations is based on input size and a random factor.
+
+<Info>
+Havoc is the most productive stage for most targets. It produces the majority of new paths discovered during fuzzing.
+</Info>
+
+### Splicing Stage
+
+After the first complete queue cycle, AFL++ activates the **splice stage**, which:
+
+1. Selects two random inputs from the queue
+2. Picks a random split point in each
+3. Combines the first half of one with the second half of the other
+4. Applies havoc mutations to the spliced result
+
+```
+Input A: "GET /foo HTTP/1.0\r\n"
+Input B: "POST /bar HTTP/1.1\r\n"
+                    ↓ splice at random midpoint
+Spliced: "GET /bar HTTP/1.1\r\n"  → then havoc
+```
+
+Splicing helps:
+- Combine successful strategies from different inputs
+- Create novel input structures
+- Escape local optima in the search space
+
+<Note>
+Splicing activates only after completing at least one full queue cycle. Early in fuzzing, only havoc is used.
+</Note>
+
+## Advanced Mutation Modes
+
+### MOpt Mutator
+
+The **MOpt (mutation optimizer)** uses a particle swarm optimization algorithm to learn which mutation operators are most effective for the current target:
+
+```bash
+afl-fuzz -L 0 -i seeds -o out -- ./target @@
+```
+
+MOpt:
+- Tracks success rates of different mutation operators
+- Dynamically adjusts operator probabilities
+- Optimizes mutation strategy during fuzzing
+- Shows "py/custom/rq" stats when active
+
+<Tip>
+For parallel fuzzing, run 10% of instances with `-L 0` to benefit from MOpt's adaptive mutation selection.
+</Tip>
+
+### CMPLOG / Redqueen
+
+CMPLOG is a specialized mutation technique that instruments comparison operations and uses the observed values to guide mutations:
+
+```bash
+# Build CMPLOG instrumented binary
+AFL_LLVM_CMPLOG=1 afl-clang-fast target.c -o target.cmplog
+
+# Use with -c flag
+afl-fuzz -i seeds -o out -c target.cmplog -- ./target @@
+```
+
+**How CMPLOG works**:
+
+1. Target is instrumented to log comparison operands
+2. AFL++ captures values used in `memcmp()`, `strcmp()`, integer comparisons, etc.
+3. These values are spliced into the input at various positions
+4. Helps bypass magic number checks, checksums, and complex comparisons
+
+**CMPLOG transformation levels** (set with `-l`):
+
+- `-l 2`: Standard transformations
+- `-l 3`: Aggressive transformations  
+- `-l 2AT`: Standard + ASCII/Unicode transformations
+
+<Info>
+CMPLOG is extremely effective for targets with magic numbers or complex input validation. It's often better than LAF-intel/COMPCOV for solving difficult comparisons.
+</Info>
+
+### Custom Mutators
+
+AFL++ supports **custom mutators** - user-written libraries that implement format-specific mutation logic:
+
+```bash
+afl-fuzz -i seeds -o out -c custom_mutator.so -- ./target @@
+```
+
+Custom mutators can:
+- Implement format-aware mutations (XML, JSON, protobuf, etc.)
+- Use grammar-based generation
+- Apply domain-specific mutation rules
+- Integrate external mutation libraries (Radamsa, honggfuzz)
+
+See the [custom mutators guide](/advanced/custom-mutators) for implementation details.
+
+## Power Schedules
+
+Power schedules determine how much fuzzing time each queue entry receives. Different schedules optimize for different goals.
+
+### Available Schedules
+
+Set with `-p <schedule>`:
+
+**explore** (default):
+- Balanced approach for general fuzzing
+- Good starting point for most targets
+
+**fast**:
+- Prefers smaller inputs
+- Maximizes execution throughput
+- Good for slow targets
+
+**coe** (Cut-Off Exponential):
+- Focuses on recent discoveries
+- Deprioritizes old queue entries
+- Good for CI fuzzing
+
+**lin** (Linear):
+- Equal time for all queue entries
+- Fair distribution
+
+**quad** (Quadratic):
+- Heavily favors recent finds
+- Aggressive exploration
+
+**exploit**:
+- Focuses fuzzing on promising areas
+- Less exploration, more depth
+- Good when you have good coverage
+
+**rare**:
+- Prioritizes inputs that hit rare edges
+- Helps discover deep paths
+- Useful for complex targets
+
+**mmopt** / **seek** / **rare**:
+- AFLfast power schedules
+- Research-backed algorithms
+- Proven effective in academic studies
+
+<Tip>
+For parallel fuzzing, use different power schedules across instances:
+- 40% with `-p explore`
+- 20% with `-p fast`
+- 20% with `-p coe`  
+- 10% with `-p exploit`
+- 10% with `-p rare`
+</Tip>
+
+### Favored Queue Entries
+
+AFL++ marks certain queue entries as "favored" based on a minimization algorithm:
+
+- Favored entries hit unique edges with smallest file size
+- Get more fuzzing attention (higher priority)
+- Marked with "*" in status screen when processing non-favored
+
+The fuzzer tracks:
+- Total paths: All queue entries
+- Favored paths: Subset that provides best coverage/size ratio
+
+```
++--------------------------------------+
+| favored paths : 879 (41.96%)         |
+|  new edges on : 423 (20.19%)         |
++--------------------------------------+
+```
+
+## Trimming Strategy
+
+Before mutation, AFL++ tries to **trim** (minimize) each input:
+
+**Trimming process**:
+
+1. Remove blocks of bytes from the input
+2. Execute and check if the same path is taken
+3. If path unchanged, keep the shorter version
+4. Repeat with different block sizes and positions
+
+The status screen shows:
+
+```
++-----------------------------------------------------+
+|    trim/eff : 20.31%/9201, 17.05%                   |
++-----------------------------------------------------+
+```
+
+- **20.31%**: Percentage of bytes removed
+- **9201**: Execs used for trimming
+- **17.05%**: Bytes deemed to have no effect (excluded from expensive deterministic stages)
+
+<Info>
+Trimming makes fuzzing faster by reducing input size. Smaller inputs = faster execution = more iterations per second.
+</Info>
+
+### Trim Control
+
+You can disable trimming for some instances:
+
+```bash
+AFL_DISABLE_TRIM=1 afl-fuzz -i seeds -o out -- ./target @@
+```
+
+<Tip>
+For parallel fuzzing, run 50-70% of instances with `AFL_DISABLE_TRIM=1`. This provides diversity - some instances find smaller inputs, others keep larger structures intact.
+</Tip>
+
+## Mutation Strategy Performance
+
+The AFL++ status screen tracks success rates for each strategy:
+
+```
++-----------------------------------------------------+
+|   bit flips : 57/289k, 18/289k, 18/288k             |
+|  byte flips : 0/36.2k, 4/35.7k, 7/34.6k             |
+| arithmetics : 53/2.54M, 0/537k, 0/55.2k             |
+|  known ints : 8/322k, 12/1.32M, 10/1.70M            |
+|  dictionary : 9/52k, 1/53k, 1/24k                   |
+|havoc/splice : 1903/20.0M, 0/0                       |
+|py/custom/rq : unused, 53/2.54M, unused              |
++-----------------------------------------------------+
+```
+
+Format: `new_paths_found / total_execs`
+
+This shows:
+- Havoc/splice generates most new paths (1,903 from 20M execs)
+- Deterministic stages contribute but are less efficient
+- Custom mutators (py/custom/rq) can be very effective
+
+<Note>
+When deterministic mode is disabled (default), the first five lines show "disabled (default, enable with -D)".
+</Note>
+
+## Mutation Best Practices
+
+### For Parallel Fuzzing
+
+Diversify mutation strategies across instances:
+
+```bash
+# Main instance
+afl-fuzz -M main -i seeds -o out -- ./target @@
+
+# Secondary with MOpt
+afl-fuzz -S secondary1 -L 0 -o out -- ./target @@
+
+# Secondary with old queue cycling
+afl-fuzz -S secondary2 -Z -o out -- ./target @@
+
+# Secondary with CMPLOG
+afl-fuzz -S secondary3 -l 2AT -c target.cmplog -o out -- ./target @@
+
+# Secondary with trimming disabled
+AFL_DISABLE_TRIM=1 afl-fuzz -S secondary4 -o out -- ./target @@
+```
+
+### Recommended Distribution
+
+- **10%**: MOpt mutator (`-L 0`)
+- **10%**: Old queue cycling (`-Z`)
+- **50-70%**: Trimming disabled (`AFL_DISABLE_TRIM=1`)
+- **1-2 instances**: CMPLOG enabled with `-l 2AT`
+- **1-2 instances**: LAF-intel/COMPCOV compiled targets
+- **Varied power schedules**: Mix explore, fast, coe, exploit, rare
+
+### Dictionary Usage
+
+Provide dictionaries when possible:
+
+```bash
+# Use pre-built dictionary
+afl-fuzz -i seeds -o out -x dictionaries/xml.dict -- ./target @@
+
+# Or let LTO mode auto-generate
+AFL_LLVM_DICT2FILE=/tmp/auto.dict afl-clang-lto target.c
+afl-fuzz -i seeds -o out -x /tmp/auto.dict -- ./target @@
+```
+
+<Tip>
+Check the `dictionaries/` directory in AFL++ for format-specific dictionaries (JSON, XML, SQL, JPEG, PNG, etc.).
+</Tip>
+
+## Understanding Mutation Yield
+
+Monitor which strategies are effective:
+
+1. **High yield from havoc/splice**: Normal, expected behavior
+2. **Good yield from deterministic stages**: Target benefits from systematic mutations
+3. **High yield from CMPLOG (rq)**: Target has many comparison-based checks
+4. **Low overall yield**: May need better seeds or target is saturated
+
+### Improving Mutation Effectiveness
+
+**If finding few new paths**:
+
+- Try CMPLOG mode (`-c` with CMPLOG binary)
+- Add format-specific dictionary (`-x`)
+- Enable LAF-intel/COMPCOV at compile time
+- Use custom mutator for the specific format
+- Check that input seeds are diverse
+
+**If mutations find crashes but few new paths**:
+
+- Good! You're finding bugs efficiently
+- Consider adding sanitizers to find more bug types
+- Continue fuzzing - quality over quantity
+
+## Next Steps
+
+- Learn about [power schedules in detail](/resources/faq#power-schedules)
+- Explore [custom mutators](/advanced/custom-mutators)
+- Read about [parallel fuzzing strategies](/advanced/parallel-fuzzing)
+- Understand [coverage tracking](/concepts/coverage) that guides mutations

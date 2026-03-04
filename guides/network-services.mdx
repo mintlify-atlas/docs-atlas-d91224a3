@@ -1,0 +1,579 @@
+---
+title: Network Service Fuzzing
+description: Strategies and techniques for fuzzing network services, daemons, and protocols
+---
+
+Fuzzing network services requires special handling because AFL++ is designed for single-execution file-based fuzzing. This guide covers proven techniques for adapting network targets.
+
+## Why Network Fuzzing is Different
+
+Direct network fuzzing faces several challenges:
+
+- **10-20x slowdown** due to network stack overhead
+- **Difficult parallelization** - binding to ports conflicts
+- **Stateful protocols** require multi-packet exchanges
+- **Connection setup/teardown** overhead per execution
+
+<Warning>
+Fuzzing over real network sockets is **extremely inefficient**. The recommended approach is to modify the target to read from files or use socket emulation.
+</Warning>
+
+## Recommended Approaches
+
+### 1. Modify Source to Read from File/Stdin (Best)
+
+The most effective method provides a **100x performance improvement** over network fuzzing.
+
+<Steps>
+  <Step title="Create a Fuzzing Harness">
+    Write a new `main()` function that reads input from a file instead of the network:
+    
+    ```c
+    #include "server.h"
+    #include <unistd.h>
+    
+    __AFL_FUZZ_INIT();
+    
+    int main(int argc, char **argv) {
+      // Initialize server components (skip network setup)
+      init_server_state();
+      
+      __AFL_INIT();
+      
+      unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+      
+      while (__AFL_LOOP(10000)) {
+        int len = __AFL_FUZZ_TESTCASE_LEN;
+        
+        // Call protocol parser directly
+        process_network_packet(buf, len);
+        
+        // Reset state between iterations
+        reset_server_state();
+      }
+      
+      return 0;
+    }
+    ```
+  </Step>
+  
+  <Step title="Compile with Instrumentation">
+    ```bash
+    afl-clang-fast -o server-fuzz fuzz_harness.c server.c -I.
+    ```
+  </Step>
+  
+  <Step title="Fuzz at Maximum Speed">
+    ```bash
+    afl-fuzz -i input -o output -- ./server-fuzz
+    ```
+    
+    You now have persistent mode + shared memory testcases = **x10-100 faster** than network fuzzing!
+  </Step>
+</Steps>
+
+<Tip>
+This approach combines persistent mode with direct function calls, eliminating all network overhead. It's the **gold standard** for network service fuzzing.
+</Tip>
+
+### 2. Socket Emulation with Preload Libraries (No Source Modification)
+
+If you can't modify source code, use a preload library to intercept socket calls.
+
+#### Using AFL++ libaflppdesock
+
+AFL++ includes a socket desocketing library:
+
+```bash
+cd utils/libaflppdesock
+make
+```
+
+**Usage:**
+
+```bash
+# Set environment variables
+export AFL_PRELOAD=/path/to/libaflppdesock.so
+export AFL_DESOCK_MODE=1
+
+# Fuzz the service
+afl-fuzz -i input -o output -- ./network-service
+```
+
+The library intercepts:
+- `socket()`, `bind()`, `listen()`, `accept()`
+- `connect()`, `send()`, `recv()`
+- `read()`, `write()` on socket descriptors
+
+And redirects them to file I/O.
+
+#### Using libdesock (Alternative)
+
+[libdesock](https://github.com/fkie-cad/libdesock) is another option:
+
+```bash
+git clone https://github.com/fkie-cad/libdesock
+cd libdesock
+make
+```
+
+**Usage:**
+
+```bash
+LD_PRELOAD=./libdesock.so AFL_PRELOAD=./libdesock.so afl-fuzz -i input -o output -- ./server
+```
+
+#### Using Preeny
+
+[Preeny](https://github.com/zardus/preeny) offers more socket mocking options:
+
+```bash
+git clone https://github.com/zardus/preeny
+cd preeny
+make
+```
+
+**Usage:**
+
+```bash
+# Desocket a server
+LD_PRELOAD=preeny/x86_64-linux-gnu/desock.so afl-fuzz -i input -o output -- ./server
+
+# Desocket with multiple connections
+LD_PRELOAD=preeny/x86_64-linux-gnu/desockmulti.so afl-fuzz -i input -o output -- ./server
+```
+
+<Warning>
+Socket emulation libraries may not work with all programs. Complex async I/O or epoll/select usage can break compatibility.
+</Warning>
+
+### 3. Stateful Protocol Fuzzing with AFLNet
+
+For protocols requiring multi-packet exchanges (HTTP, FTP, SMTP, etc.), use [AFLNet](https://github.com/aflnet/aflnet).
+
+**Features:**
+- State-aware fuzzing
+- Protocol message ordering
+- Multi-packet test cases
+- Support for FTP, SMTP, SSH, TLS, and more
+
+**Installation:**
+
+```bash
+git clone https://github.com/aflnet/aflnet
+cd aflnet
+make
+```
+
+**Usage:**
+
+```bash
+# FTP server fuzzing
+aflnet-fuzz -i in -o out -N tcp://127.0.0.1/8021 \
+  -P FTP -D 10000 -q 3 -s 3 -E -K \
+  -m none ./ftp-server -p 8021
+
+# HTTP server fuzzing  
+aflnet-fuzz -i in -o out -N tcp://127.0.0.1/8080 \
+  -P HTTP -D 10000 -q 3 -s 3 -E -K \
+  ./http-server
+```
+
+See [AFLNet Documentation](https://github.com/aflnet/aflnet#usage) for supported protocols.
+
+### 4. Network Branch (Last Resort)
+
+AFL++ has an experimental networking branch:
+
+```bash
+git clone -b networking https://github.com/AFLplusplus/AFLplusplus
+cd AFLplusplus
+make
+```
+
+**Usage:**
+
+```bash
+afl-fuzz -i input -o output -N tcp://127.0.0.1:8080 -- ./server
+```
+
+<Warning>
+This branch is **outdated and unmaintained**. Expect 10-20x slowdown. Only use if all other methods fail.
+</Warning>
+
+## Protocol-Specific Examples
+
+### HTTP Server
+
+**Option 1: Direct harness**
+
+```c
+#include "http_parser.h"
+#include <unistd.h>
+
+__AFL_FUZZ_INIT();
+
+int main(void) {
+  http_parser parser;
+  http_parser_settings settings;
+  
+  http_parser_init(&parser, HTTP_REQUEST);
+  
+  __AFL_INIT();
+  unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+  
+  while (__AFL_LOOP(10000)) {
+    int len = __AFL_FUZZ_TESTCASE_LEN;
+    
+    http_parser_execute(&parser, &settings, (char *)buf, len);
+    
+    // Reset for next iteration
+    http_parser_init(&parser, HTTP_REQUEST);
+  }
+  
+  return 0;
+}
+```
+
+Compile and fuzz:
+
+```bash
+afl-clang-fast -o http-fuzz http_fuzz.c http_parser.c
+afl-fuzz -i http_inputs -o output -- ./http-fuzz
+```
+
+**Option 2: Socket emulation**
+
+```bash
+AFL_PRELOAD=libaflppdesock.so afl-fuzz -i input -o output -- ./http-server -p 8080
+```
+
+### DNS Server
+
+```c
+#include "dns.h"
+#include <unistd.h>
+
+__AFL_FUZZ_INIT();
+
+int main(void) {
+  dns_context ctx;
+  dns_init(&ctx);
+  
+  __AFL_INIT();
+  unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+  
+  while (__AFL_LOOP(10000)) {
+    int len = __AFL_FUZZ_TESTCASE_LEN;
+    
+    // Process DNS packet
+    dns_parse_query(&ctx, buf, len);
+    
+    // Reset state
+    dns_reset(&ctx);
+  }
+  
+  return 0;
+}
+```
+
+### TLS/SSL Server
+
+```c
+#include <openssl/ssl.h>
+#include <unistd.h>
+
+__AFL_FUZZ_INIT();
+
+int main(void) {
+  SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
+  SSL *ssl = SSL_new(ctx);
+  
+  __AFL_INIT();
+  unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+  
+  while (__AFL_LOOP(1000)) {
+    int len = __AFL_FUZZ_TESTCASE_LEN;
+    
+    BIO *bio = BIO_new_mem_buf(buf, len);
+    SSL_set_bio(ssl, bio, bio);
+    
+    SSL_accept(ssl);  // Fuzz TLS handshake
+    
+    SSL_clear(ssl);
+  }
+  
+  SSL_free(ssl);
+  SSL_CTX_free(ctx);
+  return 0;
+}
+```
+
+### SSH Server
+
+Use AFLNet for stateful SSH fuzzing:
+
+```bash
+aflnet-fuzz -i ssh_seeds -o out -N tcp://127.0.0.1/2222 \
+  -P SSH -D 10000 -q 3 -s 3 -E -K \
+  ./sshd -p 2222 -d
+```
+
+## Creating Seed Inputs for Network Protocols
+
+### Capture Real Traffic
+
+Use tcpdump/Wireshark to capture legitimate protocol exchanges:
+
+```bash
+# Capture HTTP requests
+sudo tcpdump -i any port 80 -w capture.pcap
+
+# Extract payloads with tshark
+tshark -r capture.pcap -T fields -e data > payloads.txt
+
+# Convert hex to binary
+xxd -r -p payloads.txt > seed_001.bin
+```
+
+### Use Protocol Templates
+
+Create minimal valid protocol messages:
+
+**HTTP Request:**
+```
+GET / HTTP/1.1\r\n
+Host: localhost\r\n
+\r\n
+```
+
+**DNS Query:**
+```python
+import struct
+
+# DNS header: ID + flags + counts
+header = struct.pack('>HHHHHH', 0x1234, 0x0100, 1, 0, 0, 0)
+
+# Question: example.com A record
+question = b'\x07example\x03com\x00\x00\x01\x00\x01'
+
+with open('dns_seed.bin', 'wb') as f:
+    f.write(header + question)
+```
+
+### Extract from Test Suites
+
+Many network applications have protocol test suites:
+
+```bash
+# Find test data in source tree
+find ./tests -name "*.dat" -o -name "*.bin" | xargs -I{} cp {} input/
+```
+
+## Multi-Instance Fuzzing Setup
+
+```bash
+#!/bin/bash
+
+export AFL_PRELOAD=/path/to/libaflppdesock.so
+export AFL_TESTCACHE_SIZE=50
+
+# Main instance
+screen -dmS main -- afl-fuzz -M main-$HOSTNAME -i input -o output -- ./server
+
+# CMPLOG instance  
+screen -dmS cmplog -- afl-fuzz -S cmplog -c ./server-cmplog -l 2AT -i input -o output -- ./server
+
+# ASAN instance
+screen -dmS asan -- afl-fuzz -S asan -m none -i input -o output -- ./server-asan
+
+# Secondary instances
+for i in {1..5}; do
+  screen -dmS sec$i -- afl-fuzz -S sec$i -i input -o output -- ./server
+done
+```
+
+<Tip>
+Network services often have complex initialization. Use `AFL_ENTRYPOINT` to skip it when fuzzing with QEMU mode.
+</Tip>
+
+## Handling Persistent State
+
+Many servers maintain state across requests. Reset it between fuzzing iterations:
+
+```c
+void reset_server_state(void) {
+  // Close any open files
+  close_all_files();
+  
+  // Free allocated memory
+  free_buffers();
+  
+  // Reset global variables
+  memset(&global_state, 0, sizeof(global_state));
+  
+  // Reinitialize data structures
+  init_hash_table();
+}
+
+while (__AFL_LOOP(10000)) {
+  process_request(buf, len);
+  reset_server_state();  // Critical!
+}
+```
+
+<Warning>
+Failing to reset state causes "state pollution" where previous inputs affect current execution. This reduces coverage and finds fewer bugs.
+</Warning>
+
+## Debugging Network Fuzz Targets
+
+### Check if Socket Emulation Works
+
+```bash
+# Run target with preload
+LD_PRELOAD=./libaflppdesock.so ./server < test_input
+
+# Should process input without needing actual network
+```
+
+### Test Harness Directly
+
+```bash
+# Run harness on a test case
+./server-fuzz < input/seed_001.bin
+
+# Should execute without crashing
+```
+
+### Enable Debug Output
+
+```bash
+export AFL_DEBUG=1
+export AFL_DEBUG_CHILD=1
+
+afl-fuzz -i input -o output -- ./server
+```
+
+### Verify Coverage
+
+```bash
+# Check that instrumentation is working
+afl-showmap -o /dev/null -- ./server < input/seed_001.bin
+
+# Should show &gt;0 tuples captured
+```
+
+## Performance Tips
+
+<Steps>
+  <Step title="Use Persistent Mode">
+    Combine socket emulation with persistent mode for maximum speed:
+    
+    ```c
+    while (__AFL_LOOP(10000)) {
+      len = __AFL_FUZZ_TESTCASE_LEN;
+      buf = __AFL_FUZZ_TESTCASE_BUF;
+      
+      process_packet(buf, len);
+      reset_state();
+    }
+    ```
+  </Step>
+  
+  <Step title="Skip Unnecessary Initialization">
+    Don't bind sockets, create threads, or load configs in the fuzzing harness:
+    
+    ```c
+    int main(void) {
+      // Skip: socket(), bind(), listen()
+      // Skip: load_config(), init_threads()
+      
+      // Only initialize parsing components
+      init_parser();
+      
+      // Start fuzzing
+      __AFL_INIT();
+      // ...
+    }
+    ```
+  </Step>
+  
+  <Step title="Use Shared Memory">
+    Let AFL++ pass data via shared memory instead of files:
+    
+    ```c
+    __AFL_FUZZ_INIT();
+    unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+    ```
+  </Step>
+  
+  <Step title="Minimize State Reset">
+    Only reset what's necessary between iterations:
+    
+    ```c
+    // BAD: Reinitialize everything
+    reset_server_state();
+    init_parser();
+    load_config();
+    
+    // GOOD: Reset only modified state
+    parser.offset = 0;
+    memset(buffer, 0, buffer_size);
+    ```
+  </Step>
+</Steps>
+
+## Common Pitfalls
+
+<Warning>
+**Forking servers** - Servers that fork for each connection confuse AFL++. Disable forking or use a harness that calls the handler directly.
+</Warning>
+
+<Warning>
+**Multi-threading** - AFL++ doesn't handle multi-threaded targets well. Use single-threaded mode or disable threading in the fuzzing build.
+</Warning>
+
+<Warning>
+**Alarm/timeout handlers** - Disable `alarm()` calls that could interfere with AFL++'s timeout detection.
+</Warning>
+
+<Warning>
+**File descriptor leaks** - Close all file descriptors in persistent mode, or you'll hit the ulimit quickly.
+</Warning>
+
+## Real-World Examples
+
+### Fuzzing nginx
+
+```bash
+# 1. Build with instrumentation
+export CC=afl-clang-fast
+export CXX=afl-clang-fast++
+./configure --with-cc-opt="-fsanitize=address"
+make
+
+# 2. Use socket emulation
+AFL_PRELOAD=libaflppdesock.so afl-fuzz -m none -i http_seeds -o output \
+  -- ./nginx -g 'daemon off;'
+```
+
+### Fuzzing OpenSSH
+
+```bash
+# Build with AFL++
+CC=afl-clang-fast ./configure --with-sandbox=no
+make
+
+# Create harness for key exchange
+# (See examples/network_fuzzing/ in AFL++ repo)
+
+afl-fuzz -i ssh_seeds -o output -- ./ssh-fuzz
+```
+
+## Next Steps
+
+- Review [Source Code Fuzzing](/guides/source-code-fuzzing) for harness optimization techniques
+- Learn [Persistent Mode](/instrumentation/persistent-mode) for maximum performance
+- Explore [Best Practices](/guides/best-practices) for stability improvements
+- Check [Custom Mutators](/advanced/custom-mutators) for protocol-aware mutation

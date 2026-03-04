@@ -1,0 +1,206 @@
+---
+title: "Fuzzing Overview"
+description: "Understanding fuzzing and how AFL++ uses coverage-guided fuzzing to find bugs"
+---
+
+## What is Fuzzing?
+
+Fuzzing is a software testing technique that involves automatically generating and executing test cases with mutated inputs to find bugs, crashes, and security vulnerabilities in programs. Unlike traditional testing that uses predefined test cases, fuzzing explores the program behavior with unexpected, malformed, or random inputs.
+
+<Info>
+Fuzzing is particularly effective at discovering edge cases and security vulnerabilities that are difficult to find through manual testing or static analysis.
+</Info>
+
+## How AFL++ Works
+
+AFL++ is a **coverage-guided fuzzer** that uses a genetic algorithm approach to intelligently explore program paths. It's built on the foundation of American Fuzzy Lop (AFL) with extensive improvements and optimizations.
+
+### The Core Algorithm
+
+The fuzzing process follows a simple but effective cycle:
+
+1. **Load Initial Test Cases** - Start with user-supplied seed inputs that represent valid program input
+2. **Select Input from Queue** - Pick the next interesting test case to mutate
+3. **Trim Test Case** - Minimize the input to the smallest size that produces the same execution path
+4. **Mutate the Input** - Apply various mutation strategies to create new test cases
+5. **Execute and Monitor** - Run the target program with the mutated input and record coverage
+6. **Save Interesting Inputs** - If a mutation triggers new code paths, add it to the queue
+7. **Repeat** - Continue the cycle indefinitely
+
+<Note>
+The fuzzer periodically culls the corpus to eliminate test cases that have been obsoleted by newer, higher-coverage finds.
+</Note>
+
+## Coverage-Guided Fuzzing
+
+Unlike blind fuzzing that randomly generates inputs without feedback, AFL++ uses **instrumentation-guided genetic algorithms** to make intelligent decisions about which inputs to mutate.
+
+### Edge Coverage
+
+AFL++ tracks which code paths (edges) in the program's control flow graph have been executed. It uses a modified form of edge coverage that can detect subtle, local-scale changes to program control flow.
+
+**Edge coverage** is recorded as transitions between basic blocks:
+
+```
+map[current_location_ID ^ previous_location_ID >> 1] += 1
+```
+
+This approach allows AFL++ to:
+
+- Detect when a mutation triggers a new execution path
+- Prioritize inputs that explore new code areas
+- Identify which mutations are most productive
+- Build a corpus of diverse, interesting test cases
+
+<Tip>
+The edge-based coverage model is more effective than basic block coverage because it captures the control flow between blocks, not just which blocks were executed.
+</Tip>
+
+### Execution Feedback
+
+During execution, the instrumented target program updates a shared memory region (the "coverage map" or "bitmap") that records:
+
+- Which edges in the control flow graph were hit
+- How many times each edge was traversed (with 8-bit counters)
+- Hit count buckets to detect behavioral changes
+
+AFL++ analyzes this feedback after each execution to determine if:
+
+- The input triggered a crash or hang
+- The input discovered new paths (new edge coverage)
+- The input should be saved for future mutations
+
+### Test Case Prioritization
+
+AFL++ uses a **minimization algorithm** to identify "favored" test cases that:
+
+- Trigger unique edge coverage
+- Are smaller in size (faster execution)
+- Provide the same coverage as larger inputs
+
+Favored test cases receive more fuzzing attention, improving overall efficiency.
+
+## Finding Bugs
+
+AFL++ discovers various types of bugs:
+
+### Crashes
+
+When the target program receives a fatal signal (SIGSEGV, SIGILL, SIGABRT), AFL++ saves the crashing input. Crashes are grouped by:
+
+- The received signal type
+- The execution path leading to the crash
+- Unique stack traces (when combined with sanitizers)
+
+### Hangs
+
+Inputs that cause the program to timeout are classified as hangs. The default timeout is 1 second or the value specified with `-t`.
+
+### Non-Crashing Bugs
+
+When combined with sanitizers (ASAN, MSAN, UBSAN), AFL++ can detect:
+
+- Memory corruption (use-after-free, buffer overflows)
+- Uninitialized memory reads
+- Undefined behavior
+- Control flow integrity violations
+- Thread race conditions
+- Memory leaks
+
+<Info>
+You can also modify the target to call `abort()` for custom bug detection, such as comparing outputs from different implementations or checking for logic errors.
+</Info>
+
+## Key Advantages of AFL++
+
+### Speed and Efficiency
+
+- Achieves high execution throughput (often &gt;1000 execs/sec)
+- Persistent mode provides 2-20x speed increase
+- Shared memory fuzzing reduces syscall overhead
+- Optimized instrumentation with minimal runtime cost
+
+### Intelligent Mutation
+
+- Combines deterministic and random mutation strategies
+- Learns from program behavior through coverage feedback
+- Uses power schedules to allocate fuzzing resources efficiently
+- Supports custom mutators for format-specific fuzzing
+
+### Comprehensive Instrumentation
+
+Supports multiple instrumentation modes:
+
+- **LLVM mode**: Compiler-level instrumentation for source code
+- **LTO mode**: Link-time optimization with collision-free coverage
+- **QEMU mode**: Binary-only fuzzing without source code
+- **FRIDA mode**: Dynamic instrumentation for libraries and closed-source code
+
+### Output Quality
+
+Produces a minimal, high-quality corpus of test cases:
+
+- Each test case triggers unique program behavior
+- Corpus is automatically minimized during fuzzing
+- Crashes are de-duplicated by execution path
+- Results are ideal for seeding other testing tools
+
+## Fuzzing Workflow
+
+A typical AFL++ fuzzing campaign involves three phases:
+
+### 1. Instrumentation
+
+Compile the target program with AFL++ instrumentation:
+
+```bash
+CC=afl-clang-fast CXX=afl-clang-fast++ ./configure --disable-shared
+make
+```
+
+### 2. Corpus Preparation
+
+Prepare a diverse set of seed inputs:
+
+```bash
+# Collect valid inputs from various sources
+# Remove duplicates with afl-cmin
+afl-cmin -i raw_seeds -o unique_seeds -- ./target @@
+
+# Optionally minimize individual files
+afl-tmin -i input.txt -o minimized.txt -- ./target @@
+```
+
+### 3. Fuzzing
+
+Run the fuzzer with the prepared corpus:
+
+```bash
+afl-fuzz -i unique_seeds -o findings -- ./target @@
+```
+
+<Tip>
+For serious fuzzing, run multiple instances in parallel with different mutation strategies. See the [parallel fuzzing guide](/advanced/parallel-fuzzing) for details.
+</Tip>
+
+## Common Risks and Considerations
+
+<Warning>
+Fuzzing is computationally intensive. Be aware of:
+
+- **CPU Load**: Processors will run hot and may need adequate cooling
+- **Disk I/O**: Billions of reads and writes can reduce SSD/HDD lifespan
+- **Memory Usage**: Targets may consume excessive memory with malformed inputs
+- **System Stability**: Set appropriate resource limits with `-m` and `-t` options
+
+Consider using `AFL_TMPDIR` with a tmpfs/RAM disk to reduce disk wear.
+</Warning>
+
+## Next Steps
+
+Now that you understand the fundamentals of coverage-guided fuzzing:
+
+- Learn about [instrumentation modes](/concepts/instrumentation)
+- Explore [coverage tracking techniques](/concepts/coverage)
+- Understand [mutation strategies](/concepts/mutations)
+- Follow the [quickstart guide](/quickstart) to start fuzzing

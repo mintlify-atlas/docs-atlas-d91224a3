@@ -1,80 +1,404 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick start
+description: Step-by-step guide to fuzzing your first target with AFL++ - from instrumentation to finding crashes
 ---
 
-## Get started in three steps
+This guide walks you through fuzzing a target with source code available. For binary-only targets, see the [Binary-only fuzzing documentation](https://github.com/AFLplusplus/AFLplusplus/blob/stable/docs/fuzzing_binary-only_targets.md).
 
-Get your documentation site running locally and make your first customization.
+<Warning>
+Before you start, be aware of [common sense risks of fuzzing](https://github.com/AFLplusplus/AFLplusplus/blob/stable/docs/fuzzing_in_depth.md#0-common-sense-risks):
 
-### Step 1: Set up your local environment
+- Your CPU will run hot and needs adequate cooling
+- Targets may grab gigabytes of memory or fill disk space
+- Heavy I/O can reduce SSD/HDD lifespan - consider using `AFL_TMPDIR` with a RAM-disk
+- Don't fuzz on systems where data loss is unacceptable
+</Warning>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+## Overview
 
-### Step 2: Deploy your changes
+Fuzzing with AFL++ involves three steps:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+1. **Instrument the target** - Compile with AFL++ compilers to add instrumentation
+2. **Prepare seeds** - Collect and optimize initial input corpus
+3. **Run afl-fuzz** - Execute the fuzzer to find bugs
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Step 1: Instrument your target
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+### Select the AFL++ compiler
 
-### Step 3: Go live
+Choose the best compiler for your setup:
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+<Steps>
+  <Step title="LTO mode (best)">
+    If you have clang/clang++ 11 or newer:
+    ```shell
+    CC=afl-clang-lto CXX=afl-clang-lto++
+    ```
+    See [LTO mode documentation](https://github.com/AFLplusplus/AFLplusplus/blob/stable/instrumentation/README.lto.md) for details.
+  </Step>
+  
+  <Step title="LLVM mode (good)">
+    If you have clang/clang++ 3.8 or newer:
+    ```shell
+    CC=afl-clang-fast CXX=afl-clang-fast++
+    ```
+    See [LLVM mode documentation](https://github.com/AFLplusplus/AFLplusplus/blob/stable/instrumentation/README.llvm.md) for details.
+  </Step>
+  
+  <Step title="GCC_PLUGIN mode (fallback)">
+    If you have GCC 5+ with plugin support:
+    ```shell
+    CC=afl-gcc-fast CXX=afl-g++-fast
+    ```
+    See [GCC_PLUGIN documentation](https://github.com/AFLplusplus/AFLplusplus/blob/stable/instrumentation/README.gcc_plugin.md) for details.
+  </Step>
+</Steps>
+
+<Note>
+It is highly recommended to have the newest LLVM version possible installed. Anything below LLVM 9 is not recommended.
+</Note>
+
+### Compile the target
+
+For `configure`-based build systems:
+
+```shell
+CC=afl-clang-fast CXX=afl-clang-fast++ ./configure --disable-shared
+make clean all
+```
+
+For CMake-based projects:
+
+```shell
+mkdir build && cd build
+cmake -DCMAKE_C_COMPILER=afl-cc -DCMAKE_CXX_COMPILER=afl-c++ ..
+make
+```
+
+For Meson build system:
+
+```shell
+CC=afl-cc CXX=afl-c++ meson
+```
+
+<Tip>
+**Important compilation tips:**
+
+- Always compile libraries as **static**, not shared (use `--disable-shared`)
+- If the build system complains about stderr output, set `export AFL_QUIET=1`
+- If configure fails with AFL++ compiler, set `export AFL_NOOPT=1` during configure only
+- Disable `-Werror` if the build system treats warnings as errors
+</Tip>
+
+### Advanced: Enable CMPLOG (recommended)
+
+CMPLOG helps solve complex comparisons and magic bytes:
+
+```shell
+# Compile a CMPLOG-instrumented binary
+AFL_LLVM_CMPLOG=1 afl-clang-fast target.c -o target-cmplog
+
+# Compile the regular fuzzing binary
+afl-clang-fast target.c -o target
+```
+
+You'll use the CMPLOG binary with the `-c` flag during fuzzing.
+
+### Advanced: Enable LAF-INTEL (alternative)
+
+LAF-INTEL splits complex comparisons:
+
+```shell
+export AFL_LLVM_LAF_ALL=1
+afl-clang-fast target.c -o target
+```
+
+<Note>
+CMPLOG is usually more effective than LAF-INTEL. Use LAF-INTEL when targets heavily transform input before comparison.
+</Note>
+
+## Step 2: Prepare seed inputs
+
+### Collect initial inputs
+
+Gather valid input files for your target:
+
+- Example files from the target's test suite
+- Sample files from bug reports
+- Files downloaded from the internet
+- Files generated by running the target normally
+
+<Tip>
+AFL++ includes example seed files in the `testcases/` directory for common formats.
+</Tip>
+
+### Create seeds directory
+
+```shell
+mkdir seeds
+cp /path/to/valid/inputs/* seeds/
+```
+
+### Optional: Minimize the corpus
+
+Remove redundant inputs that don't provide new coverage:
+
+```shell
+# If target reads from a file
+afl-cmin -i seeds -o seeds_unique -- ./target @@
+
+# If target reads from stdin
+afl-cmin -i seeds -o seeds_unique -- ./target
+```
+
+<Note>
+The `@@` symbol is replaced by AFL++ with the path to the test input file.
+</Note>
+
+### Optional: Minimize individual files
+
+Shorter inputs fuzz faster:
+
+```shell
+mkdir input
+cd seeds_unique
+for i in *; do
+  afl-tmin -i "$i" -o "../input/$i" -- /path/to/target @@
+done
+```
+
+This step is optional but can improve fuzzing efficiency.
+
+## Step 3: Run afl-fuzz
+
+### System configuration
+
+Before fuzzing, configure your system for optimal performance:
+
+```shell
+sudo afl-system-config
+```
+
+<Warning>
+This command is required before the first fuzzing session after each reboot. If you can't run it with root privileges, set `export AFL_SKIP_CPUFREQ=1` to skip the check.
+</Warning>
+
+For permanent boot-time optimizations:
+
+```shell
+sudo afl-persistent-config
+```
+
+<Warning>
+These optimizations improve fuzzing performance but decrease system security. Use strong firewall rules and only expose SSH if you apply these settings.
+</Warning>
+
+### Basic fuzzing
+
+Start fuzzing with the minimal configuration:
+
+```shell
+afl-fuzz -i seeds -o output -- ./target @@
+```
+
+**Breaking this down:**
+
+- `-i seeds`: Input directory with seed files
+- `-o output`: Output directory (created automatically)
+- `--`: Separates afl-fuzz options from target command
+- `./target`: Your instrumented binary
+- `@@`: Placeholder for input filename (omit if target reads from stdin)
+
+### With CMPLOG
+
+If you compiled a CMPLOG binary:
+
+```shell
+afl-fuzz -i seeds -o output -c ./target-cmplog -- ./target @@
+```
+
+### With a dictionary
+
+Dictionaries help with verbose formats (SQL, HTTP, etc.):
+
+```shell
+afl-fuzz -i seeds -o output -x /path/to/dictionary.txt -- ./target @@
+```
+
+AFL++ includes dictionaries for common formats in `dictionaries/` directory.
+
+### Setting memory limits
+
+Limit memory usage to prevent OOM and find malloc failures:
+
+```shell
+afl-fuzz -i seeds -o output -m 512 -- ./target @@
+```
+
+This sets a 512MB memory limit. Adjust based on your target's needs.
+
+### Full example with recommended options
+
+```shell
+afl-fuzz -i seeds -o output \
+  -c ./target-cmplog \
+  -x dictionaries/sql.dict \
+  -m 512 \
+  -- ./target @@
+```
+
+## Understanding the UI
+
+When afl-fuzz runs, you'll see a status screen:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ process timing │ overall results │ cycle progress     │
+│ last new find  │ total crashes   │ map coverage       │
+│ total execs    │ saved crashes   │ stability          │
+│ exec speed     │ total tmouts    │ strategy info      │
+└─────────────────────────────────────────────────────────┘
+```
+
+<Warning>
+Investigate anything shown in **red** immediately. Consult the [status screen documentation](https://github.com/AFLplusplus/AFLplusplus/blob/stable/docs/afl-fuzz_approach.md#understanding-the-status-screen) for details.
+</Warning>
+
+**Key metrics:**
+
+- **last new find**: Time since last new path was discovered
+- **total crashes**: Number of unique crashes found
+- **exec speed**: Executions per second (higher is better)
+- **map coverage**: Percentage of instrumentation points hit
+
+## Analyzing results
+
+### Finding crashes
+
+Crashes are saved in the output directory:
+
+```shell
+ls output/default/crashes/
+```
+
+Each crash file is named with metadata: `id:NNNNNN,sig:NN,src:NNNNNN,...`
+
+### Reproducing crashes
+
+Test a crash manually:
+
+```shell
+# If target reads from stdin
+cat output/default/crashes/id:000000* | ./target
+
+# If target reads from a file
+./target output/default/crashes/id:000000*
+```
+
+### Debugging crashes
+
+Use GDB to investigate:
+
+```shell
+gdb ./target
+(gdb) run < output/default/crashes/id:000000*
+```
+
+Or generate core dumps:
+
+```shell
+ulimit -c unlimited
+./target < output/default/crashes/id:000000*
+gdb ./target core
+```
+
+### Finding hangs
+
+Inputs that cause timeouts are saved in:
+
+```shell
+ls output/default/hangs/
+```
+
+## Stopping and resuming
+
+### Stop fuzzing
+
+Press `Ctrl+C` or send SIGINT to afl-fuzz.
+
+### Resume fuzzing
+
+Reuse the same command but replace `-i seeds` with `-i -`:
+
+```shell
+afl-fuzz -i - -o output -- ./target @@
+```
+
+Alternatively, set `AFL_AUTORESUME=1` to auto-resume:
+
+```shell
+export AFL_AUTORESUME=1
+afl-fuzz -i seeds -o output -- ./target @@
+```
+
+## Multi-core fuzzing
+
+<Tip>
+If you want to fuzz seriously, use multiple CPU cores. A single instance is just for hobby fuzzing!
+</Tip>
+
+### Start the main fuzzer
+
+```shell
+afl-fuzz -i seeds -o output -M main -- ./target @@
+```
+
+### Start secondary fuzzers
+
+In separate terminals (or screen/tmux sessions):
+
+```shell
+afl-fuzz -i seeds -o output -S secondary1 -- ./target @@
+afl-fuzz -i seeds -o output -S secondary2 -- ./target @@
+afl-fuzz -i seeds -o output -S secondary3 -- ./target @@
+```
+
+**Recommended variations for secondaries:**
+
+- One with CMPLOG: `-c target-cmplog -l 2AT`
+- One with sanitizers (ASAN/UBSAN)
+- Different power schedules: `-p fast`, `-p explore`, `-p exploit`
+- Some with MOpt: `-L 0`
+- Some with old queue cycling: `-Z`
+
+### Check fuzzing status
+
+Monitor all instances:
+
+```shell
+afl-whatsup output/
+
+# Or just the summary
+afl-whatsup -s output/
+```
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
-
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+This quickstart covers the basics. For professional fuzzing campaigns, read the complete [fuzzing in depth guide](https://github.com/AFLplusplus/AFLplusplus/blob/stable/docs/fuzzing_in_depth.md).
 </Note>
+
+**To improve your fuzzing:**
+
+1. Use **persistent mode** for 2-20x speed improvement
+2. Use **libfuzzer harnesses** with `LLVMFuzzerTestOneInput()`
+3. Implement **custom mutators** for domain-specific formats
+4. Enable **sanitizers** to find non-crashing bugs
+5. Read about **best practices** for network services and GUI programs
+
+**Resources:**
+
+- [Fuzzing in depth](https://github.com/AFLplusplus/AFLplusplus/blob/stable/docs/fuzzing_in_depth.md) - Complete fuzzing guide
+- [Persistent mode](https://github.com/AFLplusplus/AFLplusplus/blob/stable/instrumentation/README.persistent_mode.md) - Much faster fuzzing
+- [Best practices](https://github.com/AFLplusplus/AFLplusplus/blob/stable/docs/best_practices.md) - Advanced techniques
+- [FAQ](https://github.com/AFLplusplus/AFLplusplus/blob/stable/docs/FAQ.md) - Common questions

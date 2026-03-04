@@ -1,0 +1,168 @@
+---
+title: Changelog
+description: Recent changes and version history for AFL++
+---
+
+## Recent Versions
+
+### Version ++4.36a (Development)
+
+**afl-fuzz**
+- FrameShift integrated and enabled by default. Disable with `AFL_FRAMESHIFT_DISABLE` and configure effort via `AFL_FRAMESHIFT_MAX_OVERHEAD`. Extensive fuzzbench analysis shows it improves time to new coverage at best, does nothing at worst. [Research paper](https://arxiv.org/pdf/2507.05421)
+- Added `AFL_FORCE_FASTRESUME` to ignore saved hash of the target (only works if coverage map size unchanged)
+- Prevent executed instrumented programs by the fuzz target from manipulating coverage
+
+**afl-cc**
+- LLVM 22 support (handling include file changes)
+- Added g_/curl_/xml_ string support for COMPCOV
+- New env `AFL_LLVM_DENY_EXEC` aborts any common exec calls
+- GCC plugins marked as unmaintained (seeking maintainer with gimple knowledge)
+- Optimized hidden CFG instrumentation (don't instrument vector selects)
+
+**afl-cmin**
+- New C implementation by @kcwu (currently not built due to maturity)
+- afl-cmin.py no longer changes behavior to hash original filenames
+- afl-cmin and afl-cmin.py now honor `AFL_SHA1_FILENAMES`
+
+**qemu_mode**
+- Fixed issue when `AFL_EXITPOINT` not set, which could prevent crash detection
+
+### Version ++4.35a (Release)
+
+**Major Features**
+- GUIFuzz++ merged: Unleashing Grey-box Fuzzing on Desktop GUI Applications ([Paper](https://futures.cs.utah.edu/papers/25ASE.pdf))
+
+**afl-fuzz**
+- Fixed syncing issues with crashes and custom mutators
+- Improved process cleanup
+
+**afl-cc**
+- Huge refactor for default pcguard instrumentation with bug fixes
+- Complete hidden decision coverage for LTO mode
+- IJON fix to search for necessary includes
+- Allow compiling gcc plugin with clang++
+- Fixed unusual bit sizes in cmplog-instructions-pass
+
+**qemu_mode**
+- IJON support added (see qemu_mode/README.md)
+- Leaner code with fewer warnings
+
+**afl-tmin**
+- Fixed custom trimmings
+
+### Version ++4.34c (Release)
+
+**Major Features**
+- IJON integration (see docs/IJON.md for usage)
+
+**unicorn_mode**
+- UnicornAFL v3 with major improvements
+
+**afl-fuzz**
+- Large improvements to CMPLOG
+- Scroll down before clearing screen to preserve content
+- Minor bug fixes
+
+**afl-cc**
+- Enabled LLVM 22
+- New env `AFL_COMPILER_LAUNCHER` to allow ccache usage
+- Fixed offset calculation bug in AFL++ PCGUARD
+- Make `AFL_DUMP_MAP_SIZE` work for CLASSIC modes
+- Fixed deprecation warnings for LLVM 20+
+- Fixed 128 bit support for cmplog-switches pass
+
+### Version ++4.33c (Release)
+
+**afl-fuzz**
+- Use `AFL_PRELOAD_DISCRIMINATE_FORKSERVER_PARENT` to disable fork with AFL_PRELOAD
+- Fixed FAST power schedules (bug introduced in 4.32c)
+- Colors for NO_UI output
+- Fixed potential sync issues when resuming sessions
+- More 64-bit architecture support
+
+**afl-cc**
+- Added instrumenting hidden edges (approx 5% previously missed)
+- Fixed `AFL_SAN_NO_INST` with gcc_plugin
+- MacOS aflpp driver compilation fix
+- Make `AFL_DUMP_MAP_SIZE` work with sanitizer issues
+
+**qemuafl**
+- Better MIPS persistent mode support
+- `AFL_EXITPOINT` support added
+- `AFL_QEMU_BLOCK_COV` block coverage support added
+
+**afl-cmin**
+- New afl-cmin.py implementation (much faster)
+- Nyx mode now fully works for minimizing
+
+### Version ++4.32c (Release)
+
+**afl-fuzz**
+- Fixed bug with fast restart of fully fuzzed corpus
+- Memory leak fixes
+- Removed deprecated files from queue/.state
+- Fixed bitmap update function
+- Fixed afl_custom_queue_get
+
+**afl-cc**
+- Fixed pass support for LLVM 20
+- Dropped plugin support for LLVM 13
+- Fixed `AFL_OLD_FORKSERVER`
+
+**frida_mode**
+- Fixes for new MacOS + M4 hardware
+
+### Version ++4.31c (Release)
+
+**Major Features**
+- SAND mode added (docs/SAND.md) for more efficient fuzzing with sanitizers
+
+**afl-fuzz**
+- Splicing phase now DISABLED by default (research showed it's counterproductive). Enable with `-u`
+- Python 3.13+ support
+- Loose file and shared memory permissions on Android and iPhone
+
+**afl-cc**
+- LLVM 20 support
+- `-fsanitize=fuzzer` now inserts libAFLDriver.a early
+- Added `__sanitizer_weak_hook_*` functions
+- Fixed bug with large map sizes when multiple libraries loaded
+
+## Key Historical Features
+
+### Version ++4.30c
+- **Fastresume feature**: Skip calibration phase on restart if target unchanged
+- Improved seed selection algorithm
+- Added `AFL_CUSTOM_MUTATOR_LATE_SEND`
+- New `-l X` option for base64 transformation solving
+
+### Version ++4.20c
+- **New forkserver communication model**
+- Support for up to 4 billion coverage edges (up from 6 million)
+- New `make PERFORMANCE=1` option for CPU-specific optimizations
+- Persistent record feature expanded to support replay
+
+### Version ++4.10c
+- Default power schedule changed to EXPLORE
+- Better deterministic fuzzing available with `-D`
+- LLVM 18 support
+- Injection (SQL, LDAP, XSS) fuzzing feature
+
+### Version ++4.00c
+- Complete documentation restructuring
+- Nyx mode (full system emulation) added
+- Unicorn_mode moved to unicorn2
+- New binary-only fuzzing mode: coresight_mode for aarch64
+
+### Version ++3.00c
+- All compilers combined to afl-cc
+- New seed selection with weighted randoms
+- Default schedule changed to FAST
+- Memory limits disabled by default
+- rpc.statsd support added
+
+---
+
+<Note>
+For the complete changelog including all versions, see the [full Changelog.md](https://github.com/AFLplusplus/AFLplusplus/blob/stable/docs/Changelog.md) on GitHub.
+</Note>

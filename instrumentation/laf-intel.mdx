@@ -1,0 +1,532 @@
+---
+title: "LAF-Intel Instrumentation"
+description: "Split complex comparisons to bypass fuzzing roadblocks"
+---
+
+## Overview
+
+LAF-Intel (Lost AFL Intel) provides compiler transformations that help AFL++ enter conditional blocks where conditions consist of comparisons of large values. By splitting complex comparisons into simpler ones, it dramatically improves the fuzzer's ability to discover new paths.
+
+<Info>
+Originally developed by an individual nicknamed "laf-intel" and described in the blog post [Circumventing Fuzzing Roadblocks with Compiler Transformations](https://lafintel.wordpress.com/).
+</Info>
+
+## The Problem
+
+Consider this code:
+
+```c
+if (input_value == 0x12345678) {
+  // Interesting code here
+}
+```
+
+Without LAF-Intel, AFL++ must randomly mutate the input until it hits exactly `0x12345678` - requiring approximately 1 in 4 billion attempts!
+
+## The Solution
+
+LAF-Intel transforms the comparison into multiple smaller comparisons:
+
+```c
+// Conceptual transformation
+if ((input_value & 0xFF) == 0x78) {         // Byte 1
+  if ((input_value & 0xFF00) == 0x5600) {   // Byte 2
+    if ((input_value & 0xFF0000) == 0x340000) { // Byte 3
+      if ((input_value & 0xFF000000) == 0x12000000) { // Byte 4
+        // Interesting code
+      }
+    }
+  }
+}
+```
+
+Now AFL++ gets feedback at each byte, making discovery exponentially faster!
+
+## Transformation Passes
+
+LAF-Intel includes three main transformation passes:
+
+### 1. Split Switches
+
+Transforms switch statements into separate conditional blocks.
+
+**Enable with:**
+```bash
+export AFL_LLVM_LAF_SPLIT_SWITCHES=1
+```
+
+**Example transformation:**
+```c
+// Original
+switch (value) {
+  case 100: do_something(); break;
+  case 200: do_other(); break;
+  case 300: do_more(); break;
+}
+
+// Transformed (conceptual)
+if (value == 100) do_something();
+else if (value == 200) do_other();
+else if (value == 300) do_more();
+```
+
+Benefit: Each case gets separate coverage feedback.
+
+### 2. Transform Compares
+
+Splits string comparison functions into byte-by-byte comparisons.
+
+**Enable with:**
+```bash
+export AFL_LLVM_LAF_TRANSFORM_COMPARES=1
+```
+
+**Supported functions:**
+- `strcmp`
+- `strncmp`
+- `memcmp`
+- `strcasecmp`
+- `strncasecmp`
+
+**Example transformation:**
+```c
+// Original
+if (strcmp(input, "MAGIC") == 0) {
+  // Secret code
+}
+
+// Transformed (conceptual)
+if (input[0] == 'M') {
+  if (input[1] == 'A') {
+    if (input[2] == 'G') {
+      if (input[3] == 'I') {
+        if (input[4] == 'C') {
+          // Secret code
+        }
+      }
+    }
+  }
+}
+```
+
+Benefit: AFL++ gets feedback for each matching character.
+
+### 3. Split Compares
+
+Splits integer comparisons into chains of smaller comparisons.
+
+**Enable with:**
+```bash
+export AFL_LLVM_LAF_SPLIT_COMPARES=1
+```
+
+**By default, this:**
+1. Simplifies `>=` and `<=` into chains of `>` (or `<`) and `==`
+2. Changes signed integer comparisons to chains of sign comparison + unsigned comparison
+3. Splits unsigned integer comparisons (64, 32, 16 bit) into 8-bit comparisons
+
+**Example transformation:**
+```c
+// Original
+if (value32 == 0xDEADBEEF) {
+  // Code
+}
+
+// Transformed to 8-bit comparisons
+if ((value32 & 0xFF) == 0xEF) {
+  if ((value32 & 0xFF00) == 0xBE00) {
+    if ((value32 & 0xFF0000) == 0xAD0000) {
+      if ((value32 & 0xFF000000) == 0xDE000000) {
+        // Code
+      }
+    }
+  }
+}
+```
+
+## Configuration Options
+
+### Basic Usage
+
+<ParamField path="AFL_LLVM_LAF_SPLIT_SWITCHES" type="boolean">
+  Enable split-switches pass.
+  
+  ```bash
+  export AFL_LLVM_LAF_SPLIT_SWITCHES=1
+  afl-clang-fast -o target target.c
+  ```
+</ParamField>
+
+<ParamField path="AFL_LLVM_LAF_TRANSFORM_COMPARES" type="boolean">
+  Enable transform-compares pass for string comparison functions.
+  
+  ```bash
+  export AFL_LLVM_LAF_TRANSFORM_COMPARES=1
+  afl-clang-fast -o target target.c
+  ```
+</ParamField>
+
+<ParamField path="AFL_LLVM_LAF_SPLIT_COMPARES" type="boolean">
+  Enable split-compares pass for integer comparisons.
+  
+  ```bash
+  export AFL_LLVM_LAF_SPLIT_COMPARES=1
+  afl-clang-fast -o target target.c
+  ```
+</ParamField>
+
+### Advanced Configuration
+
+<ParamField path="AFL_LLVM_LAF_SPLIT_COMPARES_BITW" type="integer">
+  Set the bit width for splitting comparisons. Options: `64`, `32`, or `16`.
+  
+  ```bash
+  export AFL_LLVM_LAF_SPLIT_COMPARES_BITW=16
+  ```
+  
+  - `64`: Split only 64-bit comparisons (minimal splitting)
+  - `32`: Split 64 and 32-bit comparisons
+  - `16`: Split 64, 32, and 16-bit comparisons
+  - Default: `8` (split all down to 8-bit)
+</ParamField>
+
+<ParamField path="AFL_LLVM_LAF_SPLIT_FLOATS" type="boolean">
+  Split floating-point comparisons into sign, exponent, and mantissa comparisons.
+  
+  ```bash
+  export AFL_LLVM_LAF_SPLIT_FLOATS=1
+  ```
+  
+  <Note>
+  Automatically activates `AFL_LLVM_LAF_SPLIT_COMPARES`.
+  </Note>
+</ParamField>
+
+<ParamField path="AFL_LLVM_LAF_ALL" type="boolean">
+  Enable all LAF-Intel transformations at once.
+  
+  ```bash
+  export AFL_LLVM_LAF_ALL=1
+  afl-clang-fast -o target target.c
+  ```
+  
+  Equivalent to setting:
+  - `AFL_LLVM_LAF_SPLIT_SWITCHES=1`
+  - `AFL_LLVM_LAF_TRANSFORM_COMPARES=1`
+  - `AFL_LLVM_LAF_SPLIT_COMPARES=1`
+</ParamField>
+
+## Usage Examples
+
+### Enable All Transformations (Recommended)
+
+```bash
+export AFL_LLVM_LAF_ALL=1
+afl-clang-fast -o target target.c
+```
+
+### Selective Transformations
+
+```bash
+# Only split switches and transform string compares
+export AFL_LLVM_LAF_SPLIT_SWITCHES=1
+export AFL_LLVM_LAF_TRANSFORM_COMPARES=1
+afl-clang-fast -o target target.c
+```
+
+### Custom Bit Width
+
+```bash
+# Split down to 16-bit instead of 8-bit
+export AFL_LLVM_LAF_SPLIT_COMPARES=1
+export AFL_LLVM_LAF_SPLIT_COMPARES_BITW=16
+afl-clang-fast -o target target.c
+```
+
+### With Floating-Point Support
+
+```bash
+export AFL_LLVM_LAF_SPLIT_FLOATS=1
+afl-clang-fast -o target target.c
+```
+
+## Compiler Compatibility
+
+LAF-Intel works with all LLVM-based instrumentation modes:
+
+<Tabs>
+  <Tab title="LLVM Mode">
+    ```bash
+    export AFL_LLVM_LAF_ALL=1
+    afl-clang-fast -o target target.c
+    ```
+  </Tab>
+  <Tab title="LTO Mode">
+    ```bash
+    export AFL_LLVM_LAF_ALL=1
+    afl-clang-lto -o target target.c
+    ```
+  </Tab>
+  <Tab title="GCC Plugin">
+    <Warning>
+    LAF-Intel is **not available** for GCC plugin mode. Use LLVM-based modes instead.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Performance Considerations
+
+### Binary Size
+
+LAF-Intel transformations increase binary size:
+
+| Transformation | Size Increase |
+|----------------|---------------|
+| Split switches | +10-30% |
+| Transform compares | +20-50% |
+| Split compares | +50-200% |
+| All enabled | +100-300% |
+
+### Execution Speed
+
+More comparisons = more instrumentation = slower execution:
+
+| Setting | Speed Impact |
+|---------|-------------|
+| No LAF-Intel | Baseline |
+| Selective (switches only) | -5 to -15% |
+| Split compares | -20 to -50% |
+| All transformations | -30 to -70% |
+
+<Tip>
+The coverage improvement usually far outweighs the performance cost!
+</Tip>
+
+### Coverage Improvement
+
+Typical improvements in path discovery:
+
+- **Magic bytes**: 100-1000x faster discovery
+- **Multi-byte comparisons**: 10-100x faster
+- **Switch statements**: 2-10x more paths found
+- **Overall coverage**: 20-50% more edges discovered
+
+## Use Cases
+
+<AccordionGroup>
+  <Accordion title="File Format Parsers">
+    ```c
+    // File format with magic bytes
+    if (*(uint32_t*)buf == 0x464c457f) {  // ELF magic
+      parse_elf_file(buf);
+    }
+    ```
+    
+    LAF-Intel splits the 32-bit comparison, making the magic bytes discoverable byte-by-byte.
+  </Accordion>
+  
+  <Accordion title="Protocol Implementations">
+    ```c
+    // Protocol parser
+    if (strncmp(packet, "HTTP/1.1", 8) == 0) {
+      handle_http(packet);
+    } else if (strncmp(packet, "HTTP/2.0", 8) == 0) {
+      handle_http2(packet);
+    }
+    ```
+    
+    Transform compares helps discover both protocol strings character-by-character.
+  </Accordion>
+  
+  <Accordion title="Checksum Validation">
+    ```c
+    // CRC check
+    uint32_t crc = calculate_crc32(data, len);
+    if (crc == expected_crc) {
+      process_data(data);
+    }
+    ```
+    
+    Split compares makes it easier to synthesize valid checksums.
+  </Accordion>
+  
+  <Accordion title="State Machines">
+    ```c
+    switch (state) {
+      case STATE_INIT:    handle_init(); break;
+      case STATE_READY:   handle_ready(); break;
+      case STATE_ACTIVE:  handle_active(); break;
+      case STATE_CLOSING: handle_closing(); break;
+    }
+    ```
+    
+    Split switches provides separate feedback for each state transition.
+  </Accordion>
+</AccordionGroup>
+
+## Comparison with CmpLog
+
+| Feature | LAF-Intel | CmpLog |
+|---------|-----------|--------|
+| Approach | Compile-time transformation | Runtime logging |
+| String compares | ✅ Excellent | ✅ Excellent |
+| Integer compares | ✅ Excellent | ⚠️ Limited |
+| Switch statements | ✅ Yes | ❌ No |
+| Magic bytes | ✅ Good | ✅ Excellent |
+| Binary size | Larger | Separate binary |
+| Performance | Slower execution | Occasional slowdown |
+| Memory overhead | Lower | Higher |
+
+<Tip>
+For best results, use **both** LAF-Intel and CmpLog!
+
+```bash
+export AFL_LLVM_LAF_ALL=1
+export AFL_LLVM_CMPLOG=1
+afl-clang-fast -o target.cmplog target.c
+```
+</Tip>
+
+## Complete Example
+
+```bash
+#!/bin/bash
+set -e
+
+# Build target with LAF-Intel
+echo "Building with LAF-Intel transformations..."
+
+export AFL_LLVM_LAF_ALL=1
+export AFL_USE_ASAN=1  # Optional: Add ASAN
+
+afl-clang-lto \
+  -o target.laf \
+  target.c \
+  -lz -lpthread
+
+# Optional: Build CmpLog version too
+echo "Building CmpLog version..."
+export AFL_LLVM_CMPLOG=1
+
+afl-clang-lto \
+  -o target.cmplog \
+  target.c \
+  -lz -lpthread
+
+unset AFL_LLVM_LAF_ALL
+unset AFL_LLVM_CMPLOG
+
+# Prepare corpus
+mkdir -p input
+echo "test" > input/seed
+
+# Start fuzzing with both optimizations
+echo "Starting fuzzer..."
+afl-fuzz \
+  -i input \
+  -o output \
+  -c ./target.cmplog \
+  -m none \
+  -- ./target.laf @@
+```
+
+## Troubleshooting
+
+### Compilation Failures
+
+**Symptom**: Target fails to compile with LAF-Intel enabled
+
+**Solutions**:
+1. Try disabling individual passes to identify the problematic one:
+   ```bash
+   # Test each separately
+   export AFL_LLVM_LAF_SPLIT_SWITCHES=1
+   # Try build
+   
+   unset AFL_LLVM_LAF_SPLIT_SWITCHES
+   export AFL_LLVM_LAF_TRANSFORM_COMPARES=1
+   # Try build
+   ```
+
+2. Some optimizations may conflict. Try disabling optimizations:
+   ```bash
+   export AFL_DONT_OPTIMIZE=1
+   ```
+
+### Binary Too Large
+
+**Symptom**: Instrumented binary is excessively large
+
+**Solutions**:
+1. Use selective instrumentation:
+   ```bash
+   export AFL_LLVM_ALLOWLIST=important_files.txt
+   ```
+
+2. Use less aggressive bit width:
+   ```bash
+   export AFL_LLVM_LAF_SPLIT_COMPARES_BITW=16
+   ```
+
+3. Enable only necessary transformations:
+   ```bash
+   # Instead of AFL_LLVM_LAF_ALL=1
+   export AFL_LLVM_LAF_TRANSFORM_COMPARES=1
+   ```
+
+### No Coverage Improvement
+
+**Symptom**: LAF-Intel doesn't improve coverage
+
+**Possible reasons**:
+1. Target has few large comparisons
+2. Bottleneck is elsewhere (try CmpLog)
+3. Need longer fuzzing time to see benefits
+
+## Best Practices
+
+1. **Start with all transformations enabled**:
+   ```bash
+   export AFL_LLVM_LAF_ALL=1
+   ```
+
+2. **Combine with LTO mode** for best performance:
+   ```bash
+   export AFL_LLVM_LAF_ALL=1
+   afl-clang-lto -o target target.c
+   ```
+
+3. **Use with CmpLog** for maximum effectiveness:
+   ```bash
+   export AFL_LLVM_LAF_ALL=1
+   export AFL_LLVM_CMPLOG=1
+   ```
+
+4. **Monitor binary size** - if too large, selectively disable transformations
+
+5. **Test stability** - ensure transformations don't break functionality
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="CmpLog" icon="code-compare" href="/instrumentation/cmplog">
+    Combine with CmpLog for maximum comparison handling
+  </Card>
+  <Card title="LTO Mode" icon="link" href="/instrumentation/lto-mode">
+    Use collision-free instrumentation for better coverage
+  </Card>
+  <Card title="Persistent Mode" icon="arrows-spin" href="/instrumentation/persistent-mode">
+    Add persistent mode for 10-20x speedup
+  </Card>
+  <Card title="Selective Instrumentation" icon="list" href="/instrumentation/llvm-mode">
+    Instrument only specific parts of code
+  </Card>
+</CardGroup>
+
+## Related Documentation
+
+- [LLVM Mode](/instrumentation/llvm-mode)
+- [LTO Mode](/instrumentation/lto-mode)
+- [CmpLog](/instrumentation/cmplog)
+- [Original LAF-Intel Blog](https://lafintel.wordpress.com/)
+- [Original Repository](https://gitlab.com/laf-intel/laf-llvm-pass/)

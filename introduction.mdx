@@ -1,0 +1,107 @@
+---
+title: Introduction
+description: Learn about AFL++, a superior fork of AFL with more speed, better mutations, and advanced instrumentation capabilities
+---
+
+AFL++ (American Fuzzy Lop plus plus) is a superior fork to Google's AFL - offering more speed, more and better mutations, more and better instrumentation, custom module support, and much more.
+
+## What is AFL++?
+
+AFL++ is a coverage-guided fuzzer that uses compile-time instrumentation and genetic algorithms to automatically discover input that triggers new internal states in the target binary. By observing how the target processes different inputs, AFL++ can intelligently evolve test cases to maximize code coverage and find bugs.
+
+Originally developed by Michal "lcamtuf" Zalewski as AFL, the tool is now actively maintained and enhanced by a dedicated team:
+
+- Marc "van Hauser" Heuse
+- Dominik Maier
+- Andrea Fioraldi
+- Heiko "hexcoder-" Eissfeldt
+
+## Why use AFL++?
+
+AFL++ offers significant improvements over the original AFL:
+
+- **Faster fuzzing**: Through optimized instrumentation and persistent mode, AFL++ achieves 2-20x speed improvements
+- **Better mutations**: Enhanced mutation strategies including MOpt mutator and custom mutator support
+- **Advanced instrumentation**: Multiple instrumentation modes (LTO, LLVM, GCC_PLUGIN) with CMPLOG and LAF-INTEL support
+- **Binary-only fuzzing**: Support for fuzzing binaries without source code via QEMU, FRIDA, and other modes
+- **Active development**: Regular updates with cutting-edge fuzzing research integrated
+- **Comprehensive tooling**: Built-in utilities for corpus minimization, crash analysis, and campaign management
+
+## Key features
+
+### Multiple instrumentation modes
+
+AFL++ provides several compiler instrumentation options:
+
+- **LTO mode** (`afl-clang-lto`) - Best performance for clang 11+
+- **LLVM mode** (`afl-clang-fast`) - Standard mode for clang 3.8+
+- **GCC_PLUGIN mode** (`afl-gcc-fast`) - For GCC 5+ with plugin support
+
+### Advanced techniques
+
+- **CMPLOG/Redqueen**: Solves complex comparisons by instrumenting comparison values
+- **LAF-INTEL/COMPCOV**: Splits integer, string, float, and switch comparisons for easier solving
+- **Persistent mode**: Dramatically faster fuzzing by staying in-process
+- **Shared memory fuzzing**: Eliminates file I/O overhead
+
+### Sanitizer support
+
+Built-in integration with sanitizers to find more bugs:
+
+- ASAN (Address Sanitizer) - Memory corruption bugs
+- MSAN (Memory Sanitizer) - Uninitialized memory reads
+- UBSAN (Undefined Behavior Sanitizer) - Undefined behavior
+- CFISAN (Control Flow Integrity) - Type confusion vulnerabilities
+- TSAN (Thread Sanitizer) - Race conditions
+- LSAN (Leak Sanitizer) - Memory leaks
+
+### Binary-only fuzzing
+
+When source code is not available, AFL++ offers multiple options:
+
+- **QEMU mode** - User-space emulation
+- **FRIDA mode** - Dynamic instrumentation (works on x86, arm64, macOS)
+- **Nyx mode** - Snapshot-based fuzzing
+- **Unicorn mode** - CPU emulation for embedded targets
+
+### Parallel fuzzing
+
+AFL++ is designed for efficient multi-core fuzzing:
+
+- Coordinate multiple fuzzer instances with different strategies
+- Sync findings across instances automatically
+- Support for distributed fuzzing across multiple machines
+- Integration with other fuzzers (honggfuzz, libfuzzer, etc.)
+
+## Use cases
+
+AFL++ is effective for discovering:
+
+- **Crashes and hangs**: Memory corruption, null pointer dereferences, assertion failures
+- **Security vulnerabilities**: Buffer overflows, use-after-free, integer overflows
+- **Logic bugs**: When combined with custom assertions or invariant checking
+- **Performance issues**: Inputs causing excessive resource consumption
+
+## Getting help
+
+If you have questions or need support:
+
+- Join the [Awesome Fuzzing Discord](https://discord.gg/gCraWct) server
+- File issues on [GitHub](https://github.com/AFLplusplus/AFLplusplus)
+- Check the [FAQ](https://github.com/AFLplusplus/AFLplusplus/blob/stable/docs/FAQ.md)
+- Participate in [discussions](https://github.com/AFLplusplus/AFLplusplus/discussions)
+
+## License
+
+AFL++ is free to copy, modify, and distribute with attribution under the terms of the Apache-2.0 License.
+
+## Citation
+
+If you use AFL++ in scientific work, please cite the WOOT'20 paper:
+
+```
+Andrea Fioraldi, Dominik Maier, Heiko Eißfeldt, and Marc Heuse.
+"AFL++: Combining incremental steps of fuzzing research".
+In 14th USENIX Workshop on Offensive Technologies (WOOT 20).
+USENIX Association, Aug. 2020.
+```

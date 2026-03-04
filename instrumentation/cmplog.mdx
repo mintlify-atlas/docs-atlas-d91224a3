@@ -1,0 +1,455 @@
+---
+title: "CmpLog Instrumentation"
+description: "Enable Redqueen-style mutations for complex comparisons"
+---
+
+## Overview
+
+CmpLog instrumentation logs comparison operands to shared memory, enabling AFL++ to apply sophisticated mutations similar to the [Redqueen](https://github.com/RUB-SysSec/redqueen) fuzzer. This is particularly effective for passing complex comparisons and magic bytes.
+
+<Info>
+CmpLog is an effective alternative to [LAF-Intel](/instrumentation/laf-intel) with similar benefits but different approach.
+</Info>
+
+## How It Works
+
+CmpLog captures the operands of comparison operations during execution:
+
+```c
+// Example: Without CmpLog, AFL++ struggles here
+if (memcmp(input, "MAGIC123", 8) == 0) {
+  // Hard to reach code
+}
+
+// With CmpLog:
+// - Logs both operands: input value and "MAGIC123"
+// - Applies input-to-state mutations
+// - Quickly discovers the magic value
+```
+
+## Supported Mutators
+
+Currently supports:
+- **Redqueen mutator** (input-to-state instructions only)
+- Effective for magic bytes, checksums, and complex comparisons
+
+For details, see [the Redqueen paper](https://github.com/RUB-SysSec/redqueen).
+
+## Building with CmpLog
+
+<Warning>
+You must build **TWO versions** of your target:
+1. Regular AFL++ instrumented binary
+2. CmpLog instrumented binary
+</Warning>
+
+### Step-by-Step Build Process
+
+<Steps>
+  <Step title="Build regular instrumented binary">
+    ```bash
+    ./configure --cc=~/path/to/afl-clang-fast
+    make
+    cp ./program ./program.afl
+    ```
+  </Step>
+  
+  <Step title="Clean build directory">
+    ```bash
+    make clean
+    ```
+  </Step>
+  
+  <Step title="Build CmpLog binary">
+    ```bash
+    export AFL_LLVM_CMPLOG=1
+    ./configure --cc=~/path/to/afl-clang-fast
+    make
+    cp ./program ./program.cmplog
+    ```
+  </Step>
+  
+  <Step title="Clean up environment">
+    ```bash
+    unset AFL_LLVM_CMPLOG
+    ```
+  </Step>
+</Steps>
+
+### Complete Example
+
+```bash
+#!/bin/bash
+set -e
+
+TARGET="myprogram"
+AFL_PATH="$HOME/AFLplusplus"
+
+# Build 1: Regular AFL++ binary
+echo "Building regular AFL++ binary..."
+CC="$AFL_PATH/afl-clang-fast" ./configure
+make clean all
+cp "$TARGET" "${TARGET}.afl"
+
+# Build 2: CmpLog binary
+echo "Building CmpLog binary..."
+make clean
+export AFL_LLVM_CMPLOG=1
+CC="$AFL_PATH/afl-clang-fast" ./configure
+make clean all
+cp "$TARGET" "${TARGET}.cmplog"
+unset AFL_LLVM_CMPLOG
+
+echo "Build complete!"
+echo "  Regular binary: ${TARGET}.afl"
+echo "  CmpLog binary:  ${TARGET}.cmplog"
+```
+
+## Usage with afl-fuzz
+
+Use the `-c` option to specify the CmpLog binary:
+
+```bash
+afl-fuzz -i input -o output -c ./program.cmplog -m none -- ./program.afl @@
+```
+
+### Command Breakdown
+
+| Option | Purpose |
+|--------|--------|
+| `-i input` | Input corpus directory |
+| `-o output` | Output directory for findings |
+| `-c ./program.cmplog` | **CmpLog binary** (for mutation guidance) |
+| `-m none` | Disable memory limit (CmpLog uses extra memory) |
+| `-- ./program.afl @@` | **Regular binary** (actual fuzzing target) |
+
+<Note>
+The regular binary (`program.afl`) is used for actual fuzzing. The CmpLog binary (`program.cmplog`) is only executed occasionally to gather comparison data.
+</Note>
+
+## Compiler Support
+
+CmpLog works with all modern AFL++ instrumentation modes:
+
+<Tabs>
+  <Tab title="LLVM Mode">
+    ```bash
+    export AFL_LLVM_CMPLOG=1
+    afl-clang-fast -o target target.c
+    ```
+  </Tab>
+  <Tab title="LTO Mode">
+    ```bash
+    export AFL_LLVM_CMPLOG=1
+    afl-clang-lto -o target target.c
+    ```
+  </Tab>
+  <Tab title="GCC Plugin">
+    ```bash
+    export AFL_GCC_CMPLOG=1
+    afl-gcc-fast -o target target.c
+    ```
+  </Tab>
+</Tabs>
+
+## Environment Variables
+
+<ParamField path="AFL_LLVM_CMPLOG" type="boolean">
+  Enable CmpLog instrumentation for LLVM-based compilation.
+  
+  ```bash
+  export AFL_LLVM_CMPLOG=1
+  afl-clang-fast -o target.cmplog target.c
+  ```
+</ParamField>
+
+<ParamField path="AFL_GCC_CMPLOG" type="boolean">
+  Enable CmpLog instrumentation for GCC plugin compilation.
+  
+  ```bash
+  export AFL_GCC_CMPLOG=1
+  afl-gcc-fast -o target.cmplog target.c
+  ```
+</ParamField>
+
+## Memory Considerations
+
+<Warning>
+CmpLog can map a significant amount of memory pages. Be careful with the `-m` option.
+</Warning>
+
+### Recommended Settings
+
+```bash
+# Disable memory limit (safest)
+afl-fuzz -i input -o output -c ./target.cmplog -m none -- ./target.afl @@
+
+# Or set a high limit (e.g., 2GB)
+afl-fuzz -i input -o output -c ./target.cmplog -m 2048 -- ./target.afl @@
+```
+
+### Why Memory Usage is Higher
+
+CmpLog requires additional memory for:
+- Logging comparison operands
+- Shared memory for communication
+- Redqueen mutation working space
+
+## Performance Impact
+
+<Tabs>
+  <Tab title="Regular Binary">
+    **No performance impact** - runs at normal AFL++ speed
+    
+    The regular binary is used for actual fuzzing and runs at full speed.
+  </Tab>
+  <Tab title="CmpLog Binary">
+    **Slower but rarely used** - executed occasionally
+    
+    The CmpLog binary is only run periodically to gather comparison data. Its slower execution has minimal impact on overall fuzzing speed.
+  </Tab>
+</Tabs>
+
+### Execution Pattern
+
+```
+Time: 0s     [Regular binary executes 1000x]
+Time: 10s    [CmpLog binary executes 1x] ← Gather comparison data
+Time: 11s    [Regular binary executes 1000x] 
+Time: 21s    [CmpLog binary executes 1x] ← Update mutations
+Time: 22s    [Regular binary executes 1000x]
+...
+```
+
+## When to Use CmpLog
+
+<AccordionGroup>
+  <Accordion title="✅ Use CmpLog When">
+    - Target has **magic bytes** (e.g., file format signatures)
+    - Code contains **checksums** or hashes
+    - Many **memcmp/strcmp** comparisons
+    - **Multi-byte comparisons** block fuzzing progress
+    - Want **Redqueen-style** input-to-state mutations
+  </Accordion>
+  
+  <Accordion title="⚠️ Consider LAF-Intel When">
+    - Target has **integer comparisons** (not just strings)
+    - Want to split **switch statements**
+    - Need **compile-time** transformations
+    - CmpLog memory usage is problematic
+    
+    See [LAF-Intel documentation](/instrumentation/laf-intel)
+  </Accordion>
+  
+  <Accordion title="🚀 Use Both When">
+    - Maximum coverage desired
+    - Different comparison types throughout code
+    - Sufficient resources available
+    
+    ```bash
+    # Build with both CmpLog and LAF-Intel
+    export AFL_LLVM_CMPLOG=1
+    export AFL_LLVM_LAF_ALL=1
+    afl-clang-fast -o target.cmplog target.c
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Comparison with LAF-Intel
+
+| Feature | CmpLog | LAF-Intel |
+|---------|--------|------------|
+| Approach | Runtime logging | Compile-time transformation |
+| Magic bytes | ✅ Excellent | ❌ Limited |
+| String compares | ✅ Excellent | ✅ Good |
+| Integer compares | ⚠️ Limited | ✅ Excellent |
+| Switch statements | ❌ No | ✅ Yes |
+| Memory overhead | Higher | Lower |
+| Binary size | Separate binary | Same binary |
+| Performance | Occasional slowdown | Always active |
+
+## Example Use Cases
+
+### File Format Fuzzing
+
+```c
+// Target with magic bytes
+if (memcmp(buf, "PNG\x89", 4) != 0) {
+  return ERROR_INVALID_FORMAT;
+}
+
+// CmpLog helps quickly discover "PNG\x89"
+```
+
+**Without CmpLog**: May take millions of executions to randomly hit the magic bytes.
+
+**With CmpLog**: Discovers and applies the magic bytes within seconds.
+
+### Checksum Validation
+
+```c
+// Simplified example
+uint32_t expected_crc = calculate_crc32(data, len);
+if (header->crc32 != expected_crc) {
+  return ERROR_BAD_CRC;
+}
+
+// CmpLog logs both values and helps synthesize valid CRCs
+```
+
+### Protocol Parsing
+
+```c
+if (strncmp(packet->protocol, "HTTP/1.1", 8) == 0) {
+  parse_http_request(packet);
+} else if (strncmp(packet->protocol, "HTTP/2.0", 8) == 0) {
+  parse_http2_request(packet);
+}
+
+// CmpLog discovers both protocol strings
+```
+
+## Troubleshooting
+
+### Out of Memory Errors
+
+**Symptom**: Fuzzer crashes with memory allocation errors
+
+**Solution**:
+```bash
+# Option 1: Disable memory limit
+afl-fuzz -c ./target.cmplog -m none -- ./target.afl @@
+
+# Option 2: Increase limit
+afl-fuzz -c ./target.cmplog -m 4096 -- ./target.afl @@
+
+# Option 3: Increase system limits
+ulimit -v unlimited
+```
+
+### No Coverage Improvement
+
+**Symptom**: CmpLog doesn't seem to help
+
+**Possible reasons**:
+1. Target has few string comparisons
+2. Comparisons are not the bottleneck
+3. Try combining with LAF-Intel
+
+**Solution**: Profile your target to understand comparison patterns
+
+### Fuzzer Not Using CmpLog Binary
+
+**Symptom**: No CmpLog activity in stats
+
+**Solution**: Verify `-c` option:
+```bash
+# Correct
+afl-fuzz -i in -o out -c ./target.cmplog -- ./target.afl @@
+
+# Wrong - missing -c
+afl-fuzz -i in -o out -- ./target.afl @@
+```
+
+## Complete Fuzzing Example
+
+```bash
+#!/bin/bash
+
+# 1. Build both versions
+export AFL_PATH="$HOME/AFLplusplus"
+
+# Regular binary
+CC="$AFL_PATH/afl-clang-lto" \
+CXX="$AFL_PATH/afl-clang-lto++" \
+./configure --disable-shared
+make clean all
+cp src/target target.afl
+
+# CmpLog binary
+make clean
+export AFL_LLVM_CMPLOG=1
+CC="$AFL_PATH/afl-clang-lto" \
+CXX="$AFL_PATH/afl-clang-lto++" \
+./configure --disable-shared
+make clean all
+cp src/target target.cmplog
+unset AFL_LLVM_CMPLOG
+
+# 2. Prepare corpus
+mkdir -p input
+echo "Initial test case" > input/seed1
+
+# 3. Start fuzzing
+afl-fuzz \
+  -i input \
+  -o output \
+  -c ./target.cmplog \
+  -m none \
+  -- ./target.afl @@
+```
+
+## Advanced: Combining Features
+
+### CmpLog + LTO Mode
+
+```bash
+# Best performance with collision-free coverage
+export AFL_LLVM_CMPLOG=1
+afl-clang-lto -o target.cmplog target.c
+```
+
+### CmpLog + LAF-Intel
+
+```bash
+# Maximum comparison splitting
+export AFL_LLVM_CMPLOG=1
+export AFL_LLVM_LAF_ALL=1
+afl-clang-fast -o target.cmplog target.c
+```
+
+### CmpLog + Persistent Mode
+
+```c
+__AFL_FUZZ_INIT();
+
+int main() {
+#ifdef __AFL_HAVE_MANUAL_CONTROL
+  __AFL_INIT();
+#endif
+
+  unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+  
+  while (__AFL_LOOP(10000)) {
+    int len = __AFL_FUZZ_TESTCASE_LEN;
+    process_input(buf, len);  // Contains comparisons
+  }
+}
+```
+
+Build both versions with persistent mode and CmpLog for maximum speed!
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="LAF-Intel" icon="split" href="/instrumentation/laf-intel">
+    Compare with LAF-Intel instrumentation approach
+  </Card>
+  <Card title="Persistent Mode" icon="arrows-spin" href="/instrumentation/persistent-mode">
+    Combine with persistent mode for 10-20x speedup
+  </Card>
+  <Card title="LTO Mode" icon="link" href="/instrumentation/lto-mode">
+    Use collision-free instrumentation
+  </Card>
+  <Card title="Advanced Fuzzing" icon="rocket" href="/guides/best-practices">
+    Learn advanced fuzzing techniques
+  </Card>
+</CardGroup>
+
+## Related Documentation
+
+- [LLVM Mode](/instrumentation/llvm-mode)
+- [LTO Mode](/instrumentation/lto-mode)
+- [GCC Plugin](/instrumentation/gcc-plugin)
+- [LAF-Intel](/instrumentation/laf-intel)
+- [Redqueen Paper](https://github.com/RUB-SysSec/redqueen)

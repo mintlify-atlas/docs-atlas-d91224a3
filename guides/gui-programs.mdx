@@ -1,0 +1,651 @@
+---
+title: GUI Application Fuzzing
+description: Techniques for fuzzing graphical user interface applications with AFL++
+---
+
+Fuzzing GUI applications presents unique challenges because they expect user interaction rather than file-based input. This guide covers strategies to make GUI programs fuzzable.
+
+## The Challenge with GUI Fuzzing
+
+GUI applications typically:
+- Require mouse/keyboard interaction
+- Use event loops and callbacks
+- Have complex initialization (window creation, rendering)
+- Process input asynchronously
+- Include significant UI overhead (50-90% of execution time)
+
+All of this is incompatible with AFL++'s fast file-based fuzzing model.
+
+## Recommended Approaches
+
+### 1. Extract and Fuzz Core Functionality (Best)
+
+The most effective approach is to bypass the GUI entirely and fuzz the underlying logic.
+
+<Steps>
+  <Step title="Identify the Target Functionality">
+    Find where the GUI application actually processes file data:
+    
+    ```cpp
+    // GUI code (DON'T FUZZ THIS)
+    void ImageEditor::onOpenFile() {
+      QString filename = QFileDialog::getOpenFileName(...);
+      QImage img = loadImage(filename);  // ← This is what we want!
+      displayImage(img);
+    }
+    
+    // Core functionality (FUZZ THIS)
+    QImage loadImage(const QString& filename) {
+      // Parse image format
+      // Decode pixel data  
+      // Return image object
+    }
+    ```
+  </Step>
+  
+  <Step title="Create a Fuzzing Harness">
+    Write a new `main()` that calls the core functionality directly:
+    
+    ```cpp
+    #include "image_loader.h"
+    #include <unistd.h>
+    
+    __AFL_FUZZ_INIT();
+    
+    int main(int argc, char **argv) {
+      // Skip ALL GUI initialization
+      // No QApplication, no windows, no widgets
+      
+      __AFL_INIT();
+      unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+      
+      while (__AFL_LOOP(10000)) {
+        int len = __AFL_FUZZ_TESTCASE_LEN;
+        
+        // Write to temp file if needed
+        FILE *f = fopen("/tmp/fuzz_input", "wb");
+        fwrite(buf, 1, len, f);
+        fclose(f);
+        
+        // Call core function directly
+        Image *img = loadImage("/tmp/fuzz_input");
+        
+        if (img) {
+          // Optionally call processing functions
+          processImage(img);
+          freeImage(img);
+        }
+      }
+      
+      return 0;
+    }
+    ```
+  </Step>
+  
+  <Step title="Compile Without GUI Dependencies">
+    ```bash
+    # Compile only the core libraries, skip GUI
+    afl-clang-fast -o image-fuzz fuzz_harness.cpp \
+      libimagecodec.a libprocessing.a \
+      -I./include
+    
+    # No Qt, GTK, or other GUI libraries needed!
+    ```
+  </Step>
+  
+  <Step title="Fuzz at Maximum Speed">
+    ```bash
+    afl-fuzz -i image_samples -o output -- ./image-fuzz
+    ```
+    
+    You've eliminated the GUI overhead entirely - **10-100x faster** than fuzzing the full GUI!
+  </Step>
+</Steps>
+
+<Tip>
+This approach is **strongly recommended**. The GUI layer adds no security-relevant functionality but costs massive performance. Always separate business logic from presentation.
+</Tip>
+
+### 2. File Input via Command Line or Environment
+
+If the GUI can read files without interaction, fuzz it directly.
+
+**Example: Image viewer that accepts filename**
+
+```bash
+# If the program accepts files via command line
+afl-fuzz -i samples -o output -- ./image-viewer @@
+
+# If it reads from a fixed location
+afl-fuzz -f /tmp/test.img -i samples -o output -- ./image-viewer
+
+# If it reads from environment variable
+echo 'export IMAGE_PATH=@@' > wrapper.sh
+echo './image-viewer' >> wrapper.sh
+chmod +x wrapper.sh
+afl-fuzz -i samples -o output -- ./wrapper.sh
+```
+
+<Warning>
+This still initializes the entire GUI stack (X11, Wayland, widget rendering, etc.), causing 10-50x slowdown. Use headless mode if possible.
+</Warning>
+
+### 3. Headless Mode with Virtual Display
+
+Run the GUI without a real display to reduce overhead.
+
+**Using Xvfb (X Virtual Framebuffer):**
+
+```bash
+# Install Xvfb
+sudo apt-get install xvfb
+
+# Start virtual X server
+Xvfb :99 -screen 0 1024x768x24 &
+export DISPLAY=:99
+
+# Fuzz with virtual display
+afl-fuzz -i input -o output -- ./gui-app @@
+```
+
+**Using xvfb-run wrapper:**
+
+```bash
+# Simpler approach
+afl-fuzz -i input -o output -- xvfb-run ./gui-app @@
+```
+
+**For Wayland applications:**
+
+```bash
+# Use weston headless backend
+weston --backend=headless-backend.so &
+export WAYLAND_DISPLAY=wayland-1
+
+afl-fuzz -i input -o output -- ./wayland-app @@
+```
+
+### 4. Mock GUI Components
+
+Replace GUI libraries with stub implementations.
+
+**Example: Stubbing Qt widgets**
+
+```cpp
+// mock_qt.cpp - Minimal Qt stubs
+class QApplication {
+public:
+  QApplication(int argc, char **argv) { }
+  int exec() { return 0; }
+};
+
+class QWidget {
+public:
+  void show() { }
+  void hide() { }
+};
+
+// ... other minimal implementations
+```
+
+Compile with mocks:
+
+```bash
+afl-clang-fast -o app-fuzz main.cpp mock_qt.cpp core_logic.cpp
+afl-fuzz -i input -o output -- ./app-fuzz @@
+```
+
+<Warning>
+This approach requires significant effort and may break if the application depends on complex GUI behavior.
+</Warning>
+
+## Fuzzing the GUI Itself
+
+For testing GUI rendering bugs, event handling, or UI-specific vulnerabilities, use specialized GUI fuzzing.
+
+### Using AFLplusplus GUIFuzz
+
+AFL++ includes a custom mutator for GUI event fuzzing:
+
+```bash
+cd custom_mutators/guifuzz
+make
+```
+
+**Create GUI event seeds:**
+
+```json
+{
+  "events": [
+    {"type": "click", "x": 100, "y": 50},
+    {"type": "keypress", "key": "a"},
+    {"type": "drag", "x1": 10, "y1": 10, "x2": 200, "y2": 150}
+  ]
+}
+```
+
+**Fuzz GUI events:**
+
+```bash
+export AFL_CUSTOM_MUTATOR_LIBRARY=/path/to/guifuzz.so
+
+afl-fuzz -i gui_seeds -o output -- ./gui-app
+```
+
+See [GUIFuzz Documentation](/advanced/custom-mutators#guifuzz) for details.
+
+### Other GUI Fuzzing Tools
+
+- **[Peach](https://www.peach.tech/)** - Commercial GUI fuzzer
+- **[WinAFL](https://github.com/googleprojectzero/winafl)** - For Windows GUI apps
+- **[Dharma](https://github.com/MozillaSecurity/dharma)** - Grammar-based event generation
+
+## Framework-Specific Guides
+
+### Qt Applications
+
+**Option 1: Bypass QApplication**
+
+```cpp
+// Instead of:
+// QApplication app(argc, argv);
+// MainWindow window;
+// window.show();
+// return app.exec();
+
+// Do this:
+int main(int argc, char **argv) {
+  // No QApplication needed for core logic
+  
+  __AFL_FUZZ_INIT();
+  __AFL_INIT();
+  
+  unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+  
+  while (__AFL_LOOP(10000)) {
+    int len = __AFL_FUZZ_TESTCASE_LEN;
+    
+    // Call document parser directly
+    QDomDocument doc;
+    doc.setContent(QByteArray((char*)buf, len));
+    
+    processDocument(doc);
+  }
+  
+  return 0;
+}
+```
+
+**Option 2: Use QOffscreenSurface**
+
+```cpp
+#include <QOffscreenSurface>
+#include <QGuiApplication>
+
+int main(int argc, char **argv) {
+  QGuiApplication app(argc, argv);
+  
+  // Render without visible window
+  QOffscreenSurface surface;
+  surface.create();
+  
+  // Rest of fuzzing logic...
+}
+```
+
+Compile:
+
+```bash
+afl-clang-fast++ -o qt-fuzz main.cpp \
+  $(pkg-config --cflags --libs Qt5Core Qt5Gui)
+```
+
+### GTK Applications
+
+**Use gtk_init() without showing windows:**
+
+```c
+#include <gtk/gtk.h>
+
+int main(int argc, char **argv) {
+  gtk_init(&argc, &argv);
+  
+  // Don't call gtk_main() or gtk_widget_show()
+  
+  __AFL_INIT();
+  unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+  
+  while (__AFL_LOOP(10000)) {
+    int len = __AFL_FUZZ_TESTCASE_LEN;
+    
+    // Call GTK parsing functions directly
+    GtkBuilder *builder = gtk_builder_new();
+    gtk_builder_add_from_string(builder, (char*)buf, len, NULL);
+    
+    g_object_unref(builder);
+  }
+  
+  return 0;
+}
+```
+
+Compile:
+
+```bash
+afl-clang-fast -o gtk-fuzz main.c \
+  $(pkg-config --cflags --libs gtk+-3.0)
+```
+
+### Electron Applications
+
+Electron apps are harder to fuzz due to Chromium overhead.
+
+**Option 1: Extract JavaScript logic**
+
+```javascript
+// fuzz_harness.js
+const fs = require('fs');
+const { processData } = require('./app/core.js');
+
+// Read fuzzer input
+const input = fs.readFileSync(process.argv[2]);
+
+// Call core logic
+try {
+  processData(input);
+} catch (e) {
+  // Handle errors
+}
+```
+
+Fuzz with AFL++:
+
+```bash
+afl-fuzz -i input -o output -- node fuzz_harness.js @@
+```
+
+**Option 2: Use Puppeteer for headless testing**
+
+```javascript
+const puppeteer = require('puppeteer');
+
+(async () => {
+  const browser = await puppeteer.launch({headless: true});
+  const page = await browser.newPage();
+  
+  // Load fuzzer input
+  const input = fs.readFileSync(process.argv[2]);
+  
+  // Inject into page
+  await page.evaluate((data) => {
+    window.processInput(data);
+  }, input);
+  
+  await browser.close();
+})();
+```
+
+### Windows GUI Applications
+
+Use WinAFL for Windows-specific GUI fuzzing:
+
+```batch
+REM Install WinAFL
+git clone https://github.com/googleprojectzero/winafl
+cd winafl
+mkdir build && cd build
+cmake .. -G "Visual Studio 16 2019" -A x64
+cmake --build . --config Release
+
+REM Fuzz a GUI app
+afl-fuzz.exe -i input -o output -t 20000 -- \
+  -coverage_module target.exe -target_module target.exe \
+  -target_offset 0x1234 -fuzz_iterations 5000 -- \
+  target.exe @@
+```
+
+See [WinAFL Documentation](https://github.com/googleprojectzero/winafl) for details.
+
+## File Format Fuzzing for GUI Apps
+
+Many GUI bugs are in file parsers:
+
+### Document Editors (Word, PDF, etc.)
+
+```cpp
+// Fuzz document parsing
+__AFL_FUZZ_INIT();
+
+int main() {
+  __AFL_INIT();
+  unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+  
+  while (__AFL_LOOP(10000)) {
+    int len = __AFL_FUZZ_TESTCASE_LEN;
+    
+    // Parse document format
+    Document *doc = parseDocument(buf, len);
+    
+    if (doc) {
+      // Render/process document
+      renderDocument(doc);
+      freeDocument(doc);
+    }
+  }
+  
+  return 0;
+}
+```
+
+### Image Viewers/Editors
+
+```cpp
+// Fuzz image codecs
+__AFL_FUZZ_INIT();
+
+int main() {
+  __AFL_INIT();
+  unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+  
+  while (__AFL_LOOP(10000)) {
+    int len = __AFL_FUZZ_TESTCASE_LEN;
+    
+    // Try each image codec
+    Image *img = decodePNG(buf, len);
+    if (!img) img = decodeJPEG(buf, len);
+    if (!img) img = decodeGIF(buf, len);
+    
+    if (img) {
+      applyFilters(img);
+      freeImage(img);
+    }
+  }
+  
+  return 0;
+}
+```
+
+### Media Players
+
+```cpp
+// Fuzz media codecs
+__AFL_FUZZ_INIT();
+
+int main() {
+  MediaPlayer player;
+  player.init();
+  
+  __AFL_INIT();
+  unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+  
+  while (__AFL_LOOP(1000)) {
+    int len = __AFL_FUZZ_TESTCASE_LEN;
+    
+    // Decode media file
+    player.loadFromMemory(buf, len);
+    player.decode();
+    player.reset();
+  }
+  
+  return 0;
+}
+```
+
+## Performance Considerations
+
+<Warning>
+GUI applications have 10-100x overhead compared to command-line tools. Expect much slower fuzzing speeds.
+</Warning>
+
+**Optimization tips:**
+
+1. **Remove all rendering** - Skip drawing, layout, and paint operations
+2. **Disable animations** - Turn off timers and animation loops
+3. **Mock file dialogs** - Replace with direct file paths
+4. **Skip network requests** - Mock or disable network code
+5. **Reduce logging** - Disable debug output and logging
+
+**Example optimization:**
+
+```cpp
+// Add to your harness
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+  #define ENABLE_RENDERING 0
+  #define ENABLE_ANIMATIONS 0
+  #define ENABLE_LOGGING 0
+#endif
+```
+
+## Troubleshooting
+
+### Application Requires X11 Display
+
+```bash
+# Error: cannot open display
+export DISPLAY=:99
+Xvfb :99 &
+afl-fuzz -i input -o output -- ./app @@
+```
+
+### Crashes on GUI Initialization
+
+```bash
+# Use AFL_ENTRYPOINT to skip init
+export AFL_ENTRYPOINT=0x401234  # Address after GUI setup
+afl-fuzz -Q -i input -o output -- ./app @@
+```
+
+### Slow Execution Speed
+
+Profile to find bottlenecks:
+
+```bash
+# Profile with perf
+perf record -g ./app test_input
+perf report
+
+# Look for GUI rendering functions and stub them out
+```
+
+### Memory Leaks in Persistent Mode
+
+```cpp
+// Ensure cleanup between iterations
+while (__AFL_LOOP(10000)) {
+  // Process input
+  
+  // CRITICAL: Free all allocations
+  cleanup_resources();
+  reset_global_state();
+}
+```
+
+## Best Practices
+
+<Tip>
+**Always prefer fuzzing core logic over the full GUI application.** The GUI adds no security value but massive overhead.
+</Tip>
+
+<Tip>
+**Use sanitizers** - GUI apps often have memory corruption bugs:
+```bash
+export AFL_USE_ASAN=1
+afl-clang-fast -o app-asan app.cpp
+afl-fuzz -m none -i input -o output -- ./app-asan @@
+```
+</Tip>
+
+<Tip>
+**Test file parsers separately** - Most GUI bugs are in format parsing, not UI rendering.
+</Tip>
+
+<Warning>
+Don't fuzz with a real X11 session - use Xvfb or headless mode to avoid interfering with your desktop.
+</Warning>
+
+## Example: Complete Harness for Image Editor
+
+```cpp
+// image_editor_fuzz.cpp
+#include "image_codec.h"
+#include "filters.h"
+#include <unistd.h>
+#include <stdlib.h>
+
+// Disable all GUI
+#define HEADLESS_MODE 1
+
+__AFL_FUZZ_INIT();
+
+int main(int argc, char **argv) {
+  // NO GUI initialization
+  // No Qt, GTK, or window creation
+  
+  // Initialize only core components
+  init_image_codecs();
+  init_filter_engine();
+  
+  __AFL_INIT();
+  unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+  
+  while (__AFL_LOOP(10000)) {
+    int len = __AFL_FUZZ_TESTCASE_LEN;
+    
+    // Try to load image
+    Image *img = load_image_from_memory(buf, len);
+    
+    if (img) {
+      // Apply various operations
+      apply_blur(img, 5);
+      apply_sharpen(img, 0.5);
+      adjust_brightness(img, 1.2);
+      
+      // Try to save (tests encoder)
+      size_t out_len;
+      uint8_t *encoded = encode_png(img, &out_len);
+      free(encoded);
+      
+      free_image(img);
+    }
+  }
+  
+  cleanup_codecs();
+  return 0;
+}
+```
+
+Compile and fuzz:
+
+```bash
+afl-clang-fast++ -o image-fuzz image_editor_fuzz.cpp \
+  libimagecodec.a libfilters.a
+
+afl-fuzz -i image_samples -o output -- ./image-fuzz
+```
+
+## Next Steps
+
+- Review [Source Code Fuzzing](/guides/source-code-fuzzing) for harness optimization
+- Learn [Persistent Mode](/instrumentation/persistent-mode) for maximum performance
+- Explore [Best Practices](/guides/best-practices) for stability improvements
+- Check [Custom Mutators](/advanced/custom-mutators) for format-aware fuzzing

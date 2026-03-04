@@ -1,0 +1,250 @@
+---
+title: afl-cc
+description: AFL++ compiler wrapper for instrumenting target programs
+---
+
+The `afl-cc` compiler wrapper instruments programs for coverage-guided fuzzing. It supports multiple compilation modes and instrumentation strategies.
+
+## Synopsis
+
+```bash
+afl-cc [compiler options] source_files...
+afl-c++ [compiler options] source_files...
+```
+
+## Description
+
+`afl-cc` is a drop-in replacement for your regular compiler (gcc/clang) that adds instrumentation to track code coverage during fuzzing. The wrapper automatically selects the appropriate compiler backend and instrumentation mode based on available toolchains.
+
+## Compiler Mode Selection
+
+The compiler mode can be selected in three ways (in order of priority):
+
+### 1. Command-line Option
+
+```bash
+afl-cc --afl-MODE source.c
+```
+
+Available modes:
+- `--afl-lto` - LTO (Link-Time Optimization) mode
+- `--afl-llvm` - LLVM mode with PCGUARD instrumentation
+- `--afl-gcc-plugin` - GCC plugin mode
+- `--afl-gcc` - Traditional GCC mode
+- `--afl-clang` - Clang assembly mode
+
+### 2. Symlink Name
+
+Create symlinks to `afl-cc`:
+- `afl-clang-fast` → LLVM mode
+- `afl-clang-lto` → LTO mode
+- `afl-gcc-fast` → GCC plugin mode
+- `afl-gcc` → GCC mode
+- `afl-clang` → Clang mode
+
+### 3. Environment Variable
+
+```bash
+export AFL_CC_COMPILER=LTO  # or LLVM, GCC_PLUGIN, GCC, CLANG
+```
+
+## Instrumentation Options
+
+<ParamField path="AFL_LLVM_INSTRUMENT" type="string">
+  Configure the instrumentation mode. Available options:
+  - `CLASSIC` - Traditional AFL edge coverage (default)
+  - `PCGUARD` - Optimized PCGUARD instrumentation
+  - `LTO` - Link-time optimization mode
+  - `CTX` - Context-sensitive instrumentation
+  - `NGRAM-2` to `NGRAM-16` - N-gram coverage
+  
+  Multiple modes can be combined: `AFL_LLVM_INSTRUMENT=CLASSIC,CTX`
+</ParamField>
+
+<ParamField path="AFL_LLVM_CMPLOG" type="boolean">
+  Enable CmpLog instrumentation for better coverage of comparison operations.
+  
+  ```bash
+  AFL_LLVM_CMPLOG=1 afl-cc -o target target.c
+  ```
+</ParamField>
+
+<ParamField path="AFL_USE_ASAN" type="boolean">
+  Enable AddressSanitizer (detects memory corruption bugs).
+  
+  ```bash
+  AFL_USE_ASAN=1 afl-cc -o target target.c
+  ```
+</ParamField>
+
+<ParamField path="AFL_USE_MSAN" type="boolean">
+  Enable MemorySanitizer (detects use of uninitialized memory).
+</ParamField>
+
+<ParamField path="AFL_USE_UBSAN" type="boolean">
+  Enable UndefinedBehaviorSanitizer (detects undefined behavior).
+</ParamField>
+
+<ParamField path="AFL_HARDEN" type="boolean">
+  Automatically add hardening flags: `-D_FORTIFY_SOURCE=2 -fstack-protector-all`.
+</ParamField>
+
+## Selective Instrumentation
+
+<ParamField path="AFL_LLVM_ALLOWLIST" type="path">
+  File containing functions/files to instrument (one per line).
+  
+  ```bash
+  AFL_LLVM_ALLOWLIST=whitelist.txt afl-cc -o target target.c
+  ```
+</ParamField>
+
+<ParamField path="AFL_LLVM_DENYLIST" type="path">
+  File containing functions/files to NOT instrument (one per line).
+</ParamField>
+
+<ParamField path="AFL_INST_RATIO" type="number">
+  Percentage of branches to instrument (0-100). Useful for very large programs.
+  
+  ```bash
+  AFL_INST_RATIO=50 afl-cc -o target target.c
+  ```
+</ParamField>
+
+## LAF-INTEL Transform
+
+Split complex comparisons for better fuzzing:
+
+<ParamField path="AFL_LLVM_LAF_ALL" type="boolean">
+  Enable all LAF transformations.
+</ParamField>
+
+<ParamField path="AFL_LLVM_LAF_SPLIT_COMPARES" type="boolean">
+  Split integer comparisons into byte-by-byte checks.
+</ParamField>
+
+<ParamField path="AFL_LLVM_LAF_SPLIT_SWITCHES" type="boolean">
+  Split switch statements.
+</ParamField>
+
+<ParamField path="AFL_LLVM_LAF_TRANSFORM_COMPARES" type="boolean">
+  Transform string comparison functions.
+</ParamField>
+
+## Advanced Options
+
+<ParamField path="AFL_DONT_OPTIMIZE" type="boolean">
+  Disable automatic `-O3` optimization.
+</ParamField>
+
+<ParamField path="AFL_OPT_LEVEL" type="string">
+  Set optimization level (default: 3). Example: `AFL_OPT_LEVEL=2`
+</ParamField>
+
+<ParamField path="AFL_CC" type="path">
+  Specify alternative C compiler to use.
+</ParamField>
+
+<ParamField path="AFL_CXX" type="path">
+  Specify alternative C++ compiler to use.
+</ParamField>
+
+<ParamField path="AFL_PATH" type="path">
+  Directory containing AFL++ runtime objects and plugins.
+</ParamField>
+
+<ParamField path="AFL_QUIET" type="boolean">
+  Suppress banner and compilation messages.
+</ParamField>
+
+## Examples
+
+### Basic Compilation
+
+```bash
+# Compile with default instrumentation
+afl-cc -o program program.c
+
+# Compile C++ program
+afl-c++ -o program program.cpp
+```
+
+### LTO Mode (Recommended)
+
+```bash
+# Use LTO for collision-free coverage
+afl-clang-lto -o program program.c
+
+# Or via environment variable
+AFL_CC_COMPILER=LTO afl-cc -o program program.c
+```
+
+### With Sanitizers
+
+```bash
+# Enable AddressSanitizer
+AFL_USE_ASAN=1 afl-cc -o program program.c
+
+# Multiple sanitizers
+AFL_USE_ASAN=1 AFL_USE_UBSAN=1 afl-cc -o program program.c
+```
+
+### CmpLog Mode
+
+```bash
+# Build CmpLog binary for afl-fuzz -c option
+AFL_LLVM_CMPLOG=1 afl-cc -o program.cmplog program.c
+```
+
+### Context-Sensitive Coverage
+
+```bash
+# Enable context-sensitive instrumentation
+AFL_LLVM_INSTRUMENT=CTX afl-cc -o program program.c
+```
+
+### LAF-INTEL Transforms
+
+```bash
+# Split all comparisons
+AFL_LLVM_LAF_ALL=1 afl-cc -o program program.c
+```
+
+### Selective Instrumentation
+
+```bash
+# Only instrument specific files
+echo "target_function" > allowlist.txt
+AFL_LLVM_ALLOWLIST=allowlist.txt afl-cc -o program program.c
+```
+
+## Persistent Mode Macros
+
+For in-process fuzzing with `__AFL_LOOP()`:
+
+```c
+#include <unistd.h>
+
+__AFL_FUZZ_INIT();
+
+int main(int argc, char **argv) {
+  __AFL_INIT();  // Optional: early forkserver
+  
+  unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+  
+  while (__AFL_LOOP(10000)) {
+    int len = __AFL_FUZZ_TESTCASE_LEN;
+    
+    // Fuzz target with buf[0..len-1]
+    fuzz_target(buf, len);
+  }
+  
+  return 0;
+}
+```
+
+## See Also
+
+- [afl-fuzz](/commands/afl-fuzz) - Main fuzzing engine
+- [afl-cmin](/commands/afl-cmin) - Corpus minimizer
+- [Environment Variables](/advanced/environment-variables) - Complete variable reference

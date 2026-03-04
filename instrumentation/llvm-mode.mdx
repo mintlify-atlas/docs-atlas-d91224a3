@@ -1,0 +1,287 @@
+---
+title: "LLVM Instrumentation Mode"
+description: "Fast LLVM-based compiler-level instrumentation for AFL++"
+---
+
+## Overview
+
+LLVM mode provides true compiler-level instrumentation instead of assembly-level rewriting. It works with LLVM versions 14-21 (18+ recommended) and offers significant performance improvements and better compatibility.
+
+<Note>
+LLVM mode replaces the `AFL_INST_RATIO` variable with more effective PCGUARD analysis.
+</Note>
+
+## Key Benefits
+
+- **Performance**: Up to 2x faster for CPU-bound programs, ~10% faster for fast binaries
+- **CPU-independent**: Works on non-x86 architectures (build with `AFL_NO_X86=1`)
+- **Better multi-threading support**: Handles multi-threaded targets more effectively
+- **Compiler optimizations**: Leverages LLVM's optimization capabilities
+
+## Building LLVM Mode
+
+### Quick Start
+
+Rebuild AFL++ with the `LLVM_CONFIG` variable set to your desired clang version:
+
+```bash
+LLVM_CONFIG=llvm-config-21 make
+```
+
+### Custom LLVM Build
+
+For a custom-compiled LLVM version, specify the full path:
+
+```bash
+LLVM_CONFIG=~/llvm-project/build/bin/llvm-config make
+```
+
+### Troubleshooting Old Linux Systems
+
+If you encounter C++ library issues on older systems, switch to gcc/g++:
+
+```bash
+LLVM_CONFIG=llvm-config-21 REAL_CC=gcc REAL_CXX=g++ make
+```
+
+## Usage
+
+### Basic Compilation
+
+Once built, you can instrument programs using `afl-clang-fast`:
+
+```bash
+CC=/path/to/afl/afl-clang-fast ./configure [...options...]
+make
+```
+
+For C++ code, also set:
+
+```bash
+CC=/path/to/afl/afl-clang-fast CXX=/path/to/afl/afl-clang-fast++ ./configure
+make
+```
+
+### Alternative: Using afl-cc
+
+You can also use `afl-cc`/`afl-c++` and direct it to use LLVM instrumentation:
+
+```bash
+# Via environment variable
+export AFL_CC_COMPILER=LLVM
+CC=afl-cc CXX=afl-c++ ./configure
+
+# Or via CFLAGS
+CFLAGS="--afl-llvm" ./configure
+```
+
+## Instrumentation Options
+
+### Coverage Modes
+
+<Tabs>
+  <Tab title="Default (PCGUARD)">
+    Standard edge coverage instrumentation using LLVM's PCGUARD.
+  </Tab>
+  <Tab title="LTO Mode">
+    Best option with collision-free coverage. See [LTO Mode](/instrumentation/lto-mode) for details.
+    
+    ```bash
+    # Use afl-clang-lto instead
+    CC=afl-clang-lto CXX=afl-clang-lto++ ./configure
+    ```
+  </Tab>
+  <Tab title="N-Gram Coverage">
+    Combines previous visited edges with the current one.
+    
+    ```bash
+    export AFL_LLVM_INSTRUMENT=NGRAM-4
+    # or
+    export AFL_LLVM_NGRAM_SIZE=4
+    ```
+    
+    Recommended values: 2, 4, or 8 (valid range: 2-16)
+  </Tab>
+  <Tab title="Context Sensitive">
+    Augments edge coverage with calling context information.
+    
+    ```bash
+    export AFL_LLVM_INSTRUMENT=CTX
+    # or
+    export AFL_LLVM_CTX=1
+    ```
+  </Tab>
+</Tabs>
+
+### Environment Variables
+
+<ParamField path="AFL_LLVM_INSTRUMENT" type="string" default="PCGUARD">
+  Set the instrumentation mode. Options:
+  - `NGRAM-{2-16}`: N-gram branch coverage
+  - `CTX`: Context sensitive coverage
+  - `CALLER`: Caller branch coverage
+  - `llvm-codecov`: Source code coverage mode
+</ParamField>
+
+<ParamField path="AFL_LLVM_THREADSAFE_INST" type="boolean">
+  Enable thread-safe counters for multi-threaded applications. Provides better precision at the cost of slightly higher overhead.
+  
+  ```bash
+  export AFL_LLVM_THREADSAFE_INST=1
+  ```
+</ParamField>
+
+<ParamField path="AFL_LLVM_NOT_ZERO" type="boolean">
+  Enable NeverZero counters for LLVM < 9 or when using thread-safe counters. Prevents counter overflow wrapping to zero.
+  
+  ```bash
+  export AFL_LLVM_NOT_ZERO=1
+  ```
+</ParamField>
+
+<ParamField path="AFL_LLVM_SKIP_NEVERZERO" type="boolean">
+  Disable NeverZero counters on LLVM 9+ for a small performance boost (only if target has no extensive loops).
+  
+  ```bash
+  export AFL_LLVM_SKIP_NEVERZERO=1
+  ```
+</ParamField>
+
+<ParamField path="AFL_LLVM_DICT2FILE" type="string">
+  Extract constant string comparison parameters to a dictionary file during compilation.
+  
+  ```bash
+  export AFL_LLVM_DICT2FILE=/absolute/path/file.txt
+  ```
+</ParamField>
+
+<ParamField path="AFL_LLVM_DICT2FILE_NO_MAIN" type="boolean">
+  Skip parsing `main()` when extracting dictionary (avoids command-line parsing strings).
+  
+  ```bash
+  export AFL_LLVM_DICT2FILE_NO_MAIN=1
+  ```
+</ParamField>
+
+## Advanced Features
+
+### Context Sensitive Branch Coverage
+
+Every function gets its own ID, and edge coverage is augmented with the calling context:
+
+```
+map[current_location_ID ^ previous_location_ID >> 1 ^ hash_callstack_IDs] += 1
+```
+
+**Usage:**
+```bash
+export AFL_LLVM_INSTRUMENT=CTX
+# or
+export AFL_LLVM_CTX=1
+```
+
+<Warning>
+Increase `MAP_SIZE_POW2` in `config.h` to at least 18 (possibly 20) to avoid map collisions.
+</Warning>
+
+### Caller Branch Coverage
+
+Lighter alternative to context-sensitive coverage - augments edge coverage with just the called function ID:
+
+```
+map[current_location_ID ^ previous_location_ID >> 1 ^ previous_callee_ID] += 1
+```
+
+**Usage:**
+```bash
+export AFL_LLVM_INSTRUMENT=CALLER
+# or
+export AFL_LLVM_CALLER=1
+```
+
+### N-Gram Branch Coverage
+
+Based on the paper ["Be Sensitive and Collaborative: Analyzing Impact of Coverage Metrics in Greybox Fuzzing"](https://www.usenix.org/system/files/raid2019-wang-jinghan.pdf). Remembers N previous branches:
+
+```
+map[current_location ^ prev_location[0] >> 1 ^ prev_location[1] >> 1 ^ ... up to n-1] += 1
+```
+
+**Usage:**
+```bash
+export AFL_LLVM_INSTRUMENT=NGRAM-4
+# or
+export AFL_LLVM_NGRAM_SIZE=4
+```
+
+<Warning>
+Increase `MAP_SIZE_POW2` in `config.h` to at least 18 (possibly 20) to avoid map collisions.
+</Warning>
+
+### NeverZero Counters
+
+Prevents edge coverage counters from wrapping to zero, improving path discovery:
+
+- **Automatic on LLVM 9+**: Enabled by default
+- **Manual enable**: Set `AFL_LLVM_NOT_ZERO=1` for LLVM < 9 or thread-safe counters
+- **Disable**: Set `AFL_LLVM_SKIP_NEVERZERO=1` for small performance boost
+
+### Dictionary Extraction (dict2file)
+
+Automatically extract string comparison constants during compilation:
+
+```bash
+export AFL_LLVM_DICT2FILE=/absolute/path/dictionary.txt
+afl-clang-fast -o target target.c
+
+# Use with afl-fuzz
+afl-fuzz -i input -o output -x /absolute/path/dictionary.txt -- ./target
+```
+
+Optionally skip `main()` to avoid command-line parsing strings:
+```bash
+export AFL_LLVM_DICT2FILE_NO_MAIN=1
+```
+
+## Supported Environment Variables
+
+LLVM mode supports the following AFL++ environment variables:
+
+- `AFL_USE_ASAN` - Enable AddressSanitizer
+- `AFL_HARDEN` - Enable hardening options
+- `AFL_DONT_OPTIMIZE` - Disable optimization
+
+<Note>
+`AFL_INST_RATIO` is NOT honored as PCGUARD analysis is more effective.
+</Note>
+
+## Performance Comparison
+
+| Binary Type | Performance Gain |
+|-------------|------------------|
+| CPU-bound programs | Up to 2x faster |
+| Fast binaries | ~10% faster |
+| With LTO mode | 10-25% additional gain |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Persistent Mode" icon="arrows-spin" href="/instrumentation/persistent-mode">
+    Achieve 10-20x speed improvements with persistent mode fuzzing
+  </Card>
+  <Card title="LTO Mode" icon="link" href="/instrumentation/lto-mode">
+    Use collision-free instrumentation for even better coverage
+  </Card>
+  <Card title="CmpLog" icon="code-compare" href="/instrumentation/cmplog">
+    Enable Redqueen-style mutations for complex comparisons
+  </Card>
+  <Card title="LAF-Intel" icon="split" href="/instrumentation/laf-intel">
+    Split complex comparisons to improve path discovery
+  </Card>
+</CardGroup>
+
+## Related Documentation
+
+- [Environment Variables](/advanced/environment-variables)
+- [Instrument List](/instrumentation/llvm-mode#selective-instrumentation)
+- [GCC Plugin Mode](/instrumentation/gcc-plugin)

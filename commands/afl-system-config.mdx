@@ -1,0 +1,382 @@
+---
+title: afl-system-config
+description: System configuration helper for optimal fuzzing performance
+---
+
+The `afl-system-config` script reconfigures your system for optimal fuzzing performance by disabling security features and tuning kernel parameters.
+
+## Synopsis
+
+```bash
+sudo afl-system-config
+```
+
+## Description
+
+`afl-system-config` adjusts system settings to maximize fuzzing performance. These changes reduce security but significantly improve fuzzing throughput.
+
+**WARNING**: This reduces system security! Only run on dedicated fuzzing machines in isolated/secured networks.
+
+## Usage
+
+The tool takes no arguments:
+
+```bash
+sudo afl-system-config
+```
+
+Root/sudo privileges are required to modify system settings.
+
+## What It Does
+
+### Linux
+
+On Linux, the script configures:
+
+<ParamField path="ASLR" type="disabled">
+  Address Space Layout Randomization - Disabled for consistent crashes.
+  
+  ```bash
+  sysctl -w kernel.randomize_va_space=0
+  ```
+</ParamField>
+
+<ParamField path="Core Pattern" type="configured">
+  Core dump naming - Simplified for crash analysis.
+  
+  ```bash
+  sysctl -w kernel.core_pattern=core
+  ```
+</ParamField>
+
+<ParamField path="CPU Frequency" type="performance">
+  CPU scaling governor - Set to performance mode.
+  
+  ```bash
+  echo performance > /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+  ```
+</ParamField>
+
+<ParamField path="Scheduler" type="tuned">
+  Process scheduling - Optimized for fuzzing workload.
+  
+  ```bash
+  sysctl -w kernel.sched_child_runs_first=1
+  sysctl -w kernel.sched_autogroup_enabled=1
+  ```
+</ParamField>
+
+<ParamField path="Swap" type="reduced">
+  Swappiness - Reduced to prefer RAM.
+  
+  ```bash
+  sysctl -w vm.swappiness=10
+  ```
+</ParamField>
+
+<ParamField path="THP" type="disabled">
+  Transparent Huge Pages - Disabled.
+  
+  ```bash
+  echo never > /sys/kernel/mm/transparent_hugepage/enabled
+  ```
+</ParamField>
+
+### FreeBSD
+
+```bash
+sysctl kern.elf32.aslr.enable=0
+sysctl kern.elf64.aslr.enable=0
+```
+
+### macOS
+
+```bash
+sysctl kern.sysv.shmmax=524288000
+sysctl kern.sysv.shmall=131072000
+# Unloads crash reporter
+```
+
+## Example Output
+
+```bash
+$ sudo afl-system-config
+```
+
+```
+This reconfigures the system to have a better fuzzing performance.
+WARNING: this reduces the security of the system!
+
+Settings applied.
+
+It is recommended to boot the kernel with lots of security off - if you
+are running a machine that is in a secured network - so set this:
+  /etc/default/grub:GRUB_CMDLINE_LINUX_DEFAULT="ibpb=off ibrs=off kpti=off
+  l1tf=off spec_rstack_overflow=off mds=off nokaslr no_stf_barrier noibpb
+  noibrs pcid nopti nospec_store_bypass_disable nospectre_v1 nospectre_v2
+  pcid=on pti=off spec_store_bypass_disable=off spectre_v2=off
+  stf_barrier=off srbds=off noexec=off noexec32=off tsx=on tsx_async_abort=off
+  mitigations=off audit=0 hardened_usercopy=off ssbd=force-off"
+
+If you run fuzzing instances in docker, run them with
+"--security-opt seccomp=unconfined" for more speed.
+```
+
+## Use Cases
+
+### Dedicated Fuzzing Server
+
+```bash
+# Set up new fuzzing machine
+sudo apt update && sudo apt install afl++
+
+# Configure system
+sudo afl-system-config
+
+# Verify CPU availability
+afl-gotcpu
+
+# Start fuzzing
+afl-fuzz -i seeds -o out -- ./target @@
+```
+
+### Cloud Fuzzing Instance
+
+```bash
+# On AWS/GCP/Azure instance
+
+# 1. Configure system
+sudo afl-system-config
+
+# 2. Optional: Apply boot parameters
+sudo vi /etc/default/grub
+# Add recommended GRUB_CMDLINE_LINUX_DEFAULT
+sudo update-grub
+sudo reboot
+
+# 3. Start fuzzing after reboot
+```
+
+### Docker Fuzzing
+
+```bash
+# On host system
+sudo afl-system-config
+
+# Run AFL++ in container with security disabled
+docker run --security-opt seccomp=unconfined \
+  -v $(pwd)/seeds:/seeds \
+  -v $(pwd)/out:/out \
+  aflplusplus/aflplusplus \
+  afl-fuzz -i /seeds -o /out -- /target @@
+```
+
+## Performance Impact
+
+Typical improvements after configuration:
+
+```
+Before afl-system-config:
+  exec/sec: 1,200
+  stability: 87%
+
+After afl-system-config:  
+  exec/sec: 2,400 (2x improvement)
+  stability: 99.5%
+```
+
+## Boot Parameters (Linux)
+
+For maximum performance, add these to GRUB:
+
+```bash
+# Edit GRUB config
+sudo vi /etc/default/grub
+
+# Add to GRUB_CMDLINE_LINUX_DEFAULT:
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash \
+  ibpb=off ibrs=off kpti=off l1tf=off \
+  spec_rstack_overflow=off mds=off nokaslr \
+  no_stf_barrier noibpb noibrs pcid nopti \
+  nospec_store_bypass_disable nospectre_v1 \
+  nospectre_v2 pcid=on pti=off \
+  spec_store_bypass_disable=off spectre_v2=off \
+  stf_barrier=off srbds=off noexec=off \
+  noexec32=off tsx=on tsx_async_abort=off \
+  mitigations=off audit=0 hardened_usercopy=off \
+  ssbd=force-off"
+
+# Update GRUB
+sudo update-grub  # Debian/Ubuntu
+sudo grub2-mkconfig -o /boot/grub2/grub.cfg  # RHEL/CentOS
+
+# Reboot
+sudo reboot
+
+# Verify after boot
+dmesg | grep -i "mitigations"
+```
+
+## Security Implications
+
+### What's Disabled
+
+1. **ASLR** - Makes exploits more reliable (bad for production, good for fuzzing)
+2. **Spectre/Meltdown mitigations** - Improves performance but enables side-channel attacks
+3. **KPTI** - Kernel Page Table Isolation (protects against Meltdown)
+4. **Various CPU security features** - IBRS, IBPB, SSBD, etc.
+
+### When It's Safe
+
+✅ Use on:
+- Dedicated fuzzing machines
+- Isolated VMs/containers
+- Machines in secured private networks
+- Cloud instances with network isolation
+
+❌ Do NOT use on:
+- Production servers
+- Multi-user systems
+- Internet-facing machines
+- Shared development servers
+
+## Persistent Configuration
+
+For persistent settings across reboots:
+
+```bash
+# Linux - add to /etc/sysctl.conf
+sudo tee -a /etc/sysctl.conf <<EOF
+kernel.randomize_va_space=0
+kernel.core_pattern=core
+kernel.sched_child_runs_first=1
+kernel.sched_autogroup_enabled=1
+vm.swappiness=10
+EOF
+
+sudo sysctl -p
+```
+
+## Platform-Specific Notes
+
+### Linux
+
+Full support, recommended for best fuzzing performance.
+
+### FreeBSD
+
+```bash
+# Disable ASLR
+sudo sysctl kern.elf32.aslr.enable=0
+sudo sysctl kern.elf64.aslr.enable=0
+
+# Suppress core dumps in ~/.login_conf
+me:\
+  :coredumpsize=0:
+```
+
+### macOS
+
+```bash
+# Limited configuration
+# Mainly adjusts shared memory limits
+# Consider disabling SIP for better performance
+```
+
+### OpenBSD
+
+```bash
+# Security features cannot be disabled on OpenBSD
+# Only malloc configuration adjustable
+sudo sysctl vm.malloc_conf=
+```
+
+## Verification
+
+### Check Applied Settings
+
+```bash
+# Linux - Verify ASLR disabled
+cat /proc/sys/kernel/randomize_va_space
+# Should show: 0
+
+# Check CPU governor
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+# Should show: performance
+
+# Verify swappiness
+sysctl vm.swappiness
+# Should show: vm.swappiness = 10
+```
+
+### Test Performance
+
+```bash
+# Before configuration
+afl-fuzz -i seeds -o out1 -V 60 -- ./target @@
+# Note: exec/sec
+
+# After configuration  
+sudo afl-system-config
+afl-fuzz -i seeds -o out2 -V 60 -- ./target @@
+# Compare: should be 1.5-3x faster
+```
+
+## Reverting Changes
+
+To restore security settings:
+
+```bash
+# Linux - restore defaults
+sudo sysctl -w kernel.randomize_va_space=2
+sudo sysctl -w vm.swappiness=60
+
+# Restore CPU governor
+echo powersave | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+
+# Remove boot parameters
+sudo vi /etc/default/grub
+# Remove fuzzing optimizations
+sudo update-grub
+sudo reboot
+```
+
+## Automation
+
+### Cloud Init Script
+
+```yaml
+#cloud-config
+runcmd:
+  - apt-get update
+  - apt-get install -y afl++
+  - afl-system-config
+  - echo 'Setup complete' > /var/log/fuzzing-ready
+```
+
+### Ansible Playbook
+
+```yaml
+- name: Configure fuzzing server
+  hosts: fuzzing_servers
+  become: yes
+  tasks:
+    - name: Run afl-system-config
+      command: afl-system-config
+      
+    - name: Configure GRUB for fuzzing
+      lineinfile:
+        path: /etc/default/grub
+        regexp: '^GRUB_CMDLINE_LINUX_DEFAULT='
+        line: 'GRUB_CMDLINE_LINUX_DEFAULT="quiet mitigations=off"'
+      notify: update grub
+      
+  handlers:
+    - name: update grub
+      command: update-grub
+```
+
+## See Also
+
+- [afl-fuzz](/commands/afl-fuzz) - Main fuzzing engine
+- [afl-gotcpu](/commands/afl-gotcpu) - CPU availability checker

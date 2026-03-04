@@ -1,0 +1,318 @@
+---
+title: FRIDA Mode
+description: Binary-only fuzzing using FRIDA's dynamic instrumentation framework
+---
+
+FRIDA mode provides an alternative binary-only fuzzer for AFL++ using the FRIDA dynamic instrumentation framework. It offers a similar user experience to QEMU mode with comparable features and environment variable configuration.
+
+## Overview
+
+FRIDA mode uses [FRIDA Stalker](https://frida.re/docs/stalker/) for dynamic instrumentation of binary targets, supporting multiple architectures and platforms.
+
+**Platform Support**: Linux, macOS, Android
+
+**Architectures**: x86, x86_64, aarch64 (aarch32 and Windows support planned)
+
+**Tutorial**: [Android Greybox Fuzzing with AFL FRIDA Mode](https://blog.quarkslab.com/android-greybox-fuzzing-with-afl-frida-mode.html)
+
+## Feature Support
+
+| Feature | Status | Notes |
+|---------|:------:|-------|
+| NeverZero | ✓ | |
+| Persistent Mode | ✓ | x86/x64/aarch64 only |
+| CMPLOG | ✓ | x86/x64/aarch64 only |
+| Selective Instrumentation | ✓ | |
+| In-Memory Test Cases | ✓ | x86/x64/aarch64 only |
+| LAF-Intel / CompCov | - | CMPLOG is better 90% of the time |
+| Non-Colliding Coverage | - | Not possible in binary-only |
+| Snapshot LKM Support | - | |
+
+## Building FRIDA Mode
+
+<Steps>
+
+### Build for 64-bit
+
+From the `frida_mode` directory:
+
+```bash
+make
+```
+
+### Build for 32-bit (Optional)
+
+For 32-bit fuzzing:
+
+```bash
+make 32
+```
+
+<Note>
+afl-fuzz doesn't need to be 32-bit, but the FRIDA mode shared library must be since it's injected into the target process.
+</Note>
+
+### Test the Build
+
+Run tests to verify the build:
+
+```bash
+cd test/
+make
+make frida  # Run FRIDA mode tests
+```
+
+For 32-bit tests:
+
+```bash
+make ARCH=x86 frida
+```
+
+</Steps>
+
+## Android Setup
+
+<Steps>
+
+### Download Android NDK
+
+Get the Android SDK from:
+
+[https://developer.android.com/ndk/downloads](https://developer.android.com/ndk/downloads)
+
+### Create Standalone Toolchain
+
+Follow the instructions at:
+
+[https://developer.android.com/ndk/guides/standalone_toolchain](https://developer.android.com/ndk/guides/standalone_toolchain)
+
+</Steps>
+
+## Basic Usage
+
+FRIDA mode uses the `-O` flag (in homage to FRIDA's [author](https://github.com/oleavr)):
+
+```bash
+afl-fuzz -O -i input_dir -o output_dir -- /path/to/binary @@
+```
+
+## Core Environment Variables
+
+FRIDA mode mirrors QEMU mode's environment variables with `FRIDA` replacing `QEMU`:
+
+| Variable | Description |
+|----------|-------------|
+| `AFL_FRIDA_DEBUG_MAPS` | Display memory layout |
+| `AFL_FRIDA_EXCLUDE_RANGES` | Exclude specific ranges from instrumentation |
+| `AFL_FRIDA_INST_RANGES` | Instrument only specific ranges |
+| `AFL_FRIDA_PERSISTENT_ADDR` | Address for persistent mode entry |
+| `AFL_FRIDA_PERSISTENT_CNT` | Number of iterations in persistent mode |
+| `AFL_FRIDA_PERSISTENT_HOOK` | Hook address for persistent mode |
+| `AFL_FRIDA_PERSISTENT_RET` | Return address for persistent mode |
+
+### CMPLOG Mode
+
+Enable CMPLOG by setting the comparison module to the target:
+
+```bash
+afl-fuzz -O -c 0 -i input_dir -o output_dir -- /path/to/binary @@
+```
+
+## JavaScript Scripting
+
+One of FRIDA mode's most powerful features is JavaScript configuration:
+
+```bash
+export AFL_FRIDA_JS_SCRIPT=/path/to/script.js
+```
+
+For detailed scripting documentation, see [Scripting.md](https://github.com/AFLplusplus/AFLplusplus/blob/stable/frida_mode/Scripting.md) in the FRIDA mode directory.
+
+## Performance
+
+FRIDA mode includes libpng benchmarks compatible with [FuzzBench](https://google.github.io/fuzzbench/), supporting:
+- Basic fork-server mode
+- Persistent mode
+- Persistent mode with in-memory test cases
+
+These benchmarks allow direct performance comparison with QEMU mode.
+
+## Design Architecture
+
+FRIDA mode works by:
+
+1. **Injection**: Using `LD_PRELOAD` (`DYLD_INSERT_LIBRARIES` on macOS) to inject `afl-frida-trace.so`
+2. **Instrumentation**: Using FRIDA Stalker for dynamic code instrumentation
+3. **Coverage**: Augmenting the target with coverage information similar to afl-gcc/afl-clang
+4. **Fork Server**: Providing AFL++ integration via compiler-rt
+5. **Prefetching**: Sharing instrumented blocks between parent and child to avoid regeneration
+
+### Optimized Assembly
+
+FRIDA mode uses optimized assembly snippets on aarch64 and x86/64 instead of C functions, avoiding the need to push/pop full register context. This significantly improves performance as instrumentation runs on every basic block.
+
+## Advanced Configuration
+
+### Coverage and Debugging
+
+| Variable | Description |
+|----------|-------------|
+| `AFL_FRIDA_INST_COVERAGE_FILE` | Write DynamoRIO format coverage (for IDA Lighthouse) |
+| `AFL_FRIDA_INST_COVERAGE_ABSOLUTE` | Use absolute addresses in coverage files |
+| `AFL_FRIDA_INST_DEBUG_FILE` | Write raw assembly of original and instrumented blocks |
+| `AFL_FRIDA_INST_TRACE` | Log executed block addresses (implies NO_OPTIMIZE) |
+| `AFL_FRIDA_INST_TRACE_UNIQUE` | Log each edge only once |
+| `AFL_FRIDA_INST_UNSTABLE_COVERAGE_FILE` | Coverage file for unstable edges |
+
+### Performance Tuning
+
+| Variable | Description |
+|----------|-------------|
+| `AFL_FRIDA_INST_CACHE_SIZE` | Set instrumentation cache size (default: 256MB) |
+| `AFL_FRIDA_INST_NO_CACHE` | Disable address translation cache |
+| `AFL_FRIDA_INST_NO_OPTIMIZE` | Disable optimized inline assembly |
+| `AFL_FRIDA_INST_NO_PREFETCH` | Disable prefetching of instrumented blocks |
+| `AFL_FRIDA_INST_NO_PREFETCH_BACKPATCH` | Disable prefetching of backpatches |
+| `AFL_FRIDA_INST_NO_SUPPRESS` | Disable deterministic branch suppression |
+| `AFL_FRIDA_STALKER_IC_ENTRIES` | Inline cache entries (default: 32) |
+| `AFL_FRIDA_STALKER_NO_BACKPATCH` | Disable backpatching |
+| `AFL_FRIDA_STALKER_ADJACENT_BLOCKS` | Number of adjacent blocks to fetch |
+
+### Instrumentation Control
+
+| Variable | Description |
+|----------|-------------|
+| `AFL_FRIDA_INST_INSN` | Instrument conditional instructions (e.g., CMOV) |
+| `AFL_FRIDA_INST_JIT` | Instrument JIT-compiled code |
+| `AFL_FRIDA_INST_NO_DYNAMIC_LOAD` | Don't instrument late-loaded code |
+| `AFL_FRIDA_INST_SEED` | Set initial hash seed for block IDs |
+| `AFL_FRIDA_INST_REGS_FILE` | Write register contents at block start |
+
+### Persistent Mode Debugging
+
+Debug persistent mode setup:
+
+```bash
+export AFL_FRIDA_PERSISTENT_DEBUG=1
+
+gdb \
+    --ex 'set environment AFL_FRIDA_PERSISTENT_ADDR=0x12345678' \
+    --ex 'set environment AFL_FRIDA_PERSISTENT_RET=0x87654321' \
+    --ex 'set environment AFL_FRIDA_PERSISTENT_DEBUG=1' \
+    --ex 'set environment AFL_DEBUG_CHILD=1' \
+    --ex 'set environment LD_PRELOAD=afl-frida-trace.so' \
+    --args /path/to/binary
+```
+
+### Output Control
+
+| Variable | Description |
+|----------|-------------|
+| `AFL_FRIDA_OUTPUT_STDOUT` | Redirect target stdout to file |
+| `AFL_FRIDA_OUTPUT_STDERR` | Redirect target stderr to file |
+| `AFL_FRIDA_VERBOSE` | Enable verbose output |
+| `AFL_FRIDA_DRIVER_NO_HOOK` | Read from stdin instead of in-memory test cases |
+
+### Statistics and Analysis
+
+```bash
+export AFL_FRIDA_STATS_FILE=/path/to/stats.txt
+export AFL_FRIDA_STATS_INTERVAL=1  # seconds
+```
+
+Generates detailed statistics including:
+- Transition counts (calls, jumps, returns)
+- Instrumentation metrics (blocks, instructions)
+- End-of-block instruction breakdown
+- Relocated instruction analysis
+
+### Security and Debugging
+
+| Variable | Description |
+|----------|-------------|
+| `AFL_FRIDA_SECCOMP_FILE` | Log syscalls to file |
+| `AFL_FRIDA_TRACEABLE` | Make child traceable (Linux only, for gcore) |
+
+## FASAN - FRIDA Address Sanitizer
+
+FRIDA mode supports Address Sanitizer for binary-only targets:
+
+<Steps>
+
+### Load Address Sanitizer DSO
+
+Add the Address Sanitizer shared object first in `AFL_PRELOAD`:
+
+```bash
+export AFL_PRELOAD=/path/to/libasan.so:/path/to/other.so
+```
+
+### Run Fuzzer
+
+FASAN automatically instruments memory operations:
+
+```bash
+afl-fuzz -O -i input_dir -o output_dir -- /path/to/binary @@
+```
+
+</Steps>
+
+FASAN adds instrumentation for memory operands and calls `__asan_loadN` and `__asan_storeN` functions to validate memory accesses. This avoids instrumenting standard libraries and handles load-widening issues.
+
+## Map Density Improvements
+
+FRIDA mode includes improvements to reduce edge collisions. See [MapDensity.md](https://github.com/AFLplusplus/AFLplusplus/blob/stable/frida_mode/MapDensity.md) for details.
+
+## macOS Library Fuzzing
+
+Example of fuzzing dynamic libraries on macOS:
+
+<Steps>
+
+### Create Test Harness
+
+Build a simple executable that loads the library:
+
+```c
+__attribute__((constructor))
+void load_library() {
+    void* handle = dlopen("/path/to/lib.dylib", RTLD_NOW);
+    // Or link directly against the library
+}
+
+int main() {
+    // Call target function
+}
+```
+
+### Configure Instrumentation
+
+```bash
+export AFL_FRIDA_INST_RANGES=lib.dylib
+```
+
+### Run Fuzzer
+
+```bash
+afl-fuzz -O -i input_dir -o output_dir -- ./harness @@
+```
+
+</Steps>
+
+<Note>
+The library must be loaded before `main` executes, as that's when FRIDA mode initializes.
+</Note>
+
+## Troubleshooting
+
+For debugging assistance, refer to [DEBUGGING.md](https://github.com/AFLplusplus/AFLplusplus/blob/stable/frida_mode/DEBUGGING.md) in the FRIDA mode directory.
+
+## Future Development
+
+Planned features:
+- Aarch32 support
+- Windows target support
+- Additional performance improvements
+- Feature parity with QEMU mode
+
+Contributions are welcome - please coordinate to avoid duplicate efforts.

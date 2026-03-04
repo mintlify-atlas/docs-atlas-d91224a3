@@ -1,0 +1,309 @@
+---
+title: 'Power Schedules'
+description: 'AFLfast power schedules and MOpt mutators for optimized fuzzing'
+icon: 'gauge-high'
+---
+
+Power schedules determine how AFL++ allocates fuzzing effort across queue entries. Different schedules can significantly impact fuzzing effectiveness depending on your target.
+
+## What Are Power Schedules?
+
+When AFL++ selects a test case from the queue, it decides how many fuzzing attempts to perform on it. The power schedule is the algorithm that makes this decision.
+
+Different schedules optimize for:
+- **Fast coverage growth** (explore mode)
+- **Deep path exploration** (exploit mode)
+- **Rare edge discovery**
+- **Balanced approaches**
+
+## Available Schedules
+
+Select a power schedule with the `-p` option:
+
+```bash
+afl-fuzz -i input -o output -p explore -- ./target @@
+```
+
+### explore (default)
+
+Balanced schedule that favors finding new paths quickly while still exploring existing ones.
+
+<Tip>
+**Best for:** General-purpose fuzzing, initial campaigns, unknown targets
+</Tip>
+
+```bash
+afl-fuzz -i input -o output -p explore -- ./target @@
+```
+
+### fast
+
+Prioritizes quick execution and rapid iteration through the queue.
+
+<Tip>
+**Best for:** Targets with fast execution, large initial corpus, time-constrained fuzzing
+</Tip>
+
+```bash
+afl-fuzz -i input -o output -p fast -- ./target @@
+```
+
+### coe (Cut-Off Exponential)
+
+AFLfast schedule that favors recently discovered paths.
+
+<Tip>
+**Best for:** Targets where recent discoveries are likely to lead to more findings
+</Tip>
+
+```bash
+afl-fuzz -i input -o output -p coe -- ./target @@
+```
+
+### lin (Linear)
+
+AFLfast schedule with linear favoritism.
+
+<Tip>
+**Best for:** Balanced exploration without extreme bias
+</Tip>
+
+```bash
+afl-fuzz -i input -o output -p lin -- ./target @@
+```
+
+### quad (Quadratic)
+
+AFLfast schedule with quadratic favoritism toward recent paths.
+
+<Tip>
+**Best for:** Aggressive exploitation of recent discoveries
+</Tip>
+
+```bash
+afl-fuzz -i input -o output -p quad -- ./target @@
+```
+
+### exploit
+
+Aggressively exploits promising paths, spending more time on high-value inputs.
+
+<Tip>
+**Best for:** Targets where deep exploration of specific paths is valuable, mature campaigns
+</Tip>
+
+```bash
+afl-fuzz -i input -o output -p exploit -- ./target @@
+```
+
+### rare
+
+Focuses on rare edges and infrequently executed paths.
+
+<Tip>
+**Best for:** Finding edge cases, hard-to-reach code, targets with many conditional branches
+</Tip>
+
+```bash
+afl-fuzz -i input -o output -p rare -- ./target @@
+```
+
+## Recommended Distribution
+
+For parallel fuzzing campaigns, distribute power schedules across instances:
+
+<CodeGroup>
+
+```bash Main Instance
+# Main fuzzer with default explore schedule
+afl-fuzz -M main -i input -o output -p explore -- ./target @@
+```
+
+```bash Secondary Instances
+# Distribute different schedules
+afl-fuzz -S secondary1 -i input -o output -p fast -- ./target @@
+afl-fuzz -S secondary2 -i input -o output -p coe -- ./target @@
+afl-fuzz -S secondary3 -i input -o output -p lin -- ./target @@
+afl-fuzz -S secondary4 -i input -o output -p quad -- ./target @@
+afl-fuzz -S secondary5 -i input -o output -p exploit -- ./target @@
+afl-fuzz -S secondary6 -i input -o output -p rare -- ./target @@
+```
+
+</CodeGroup>
+
+<Note>
+Run each power schedule with a different instance to maximize path diversity.
+</Note>
+
+## MOpt Mutator
+
+MOpt (Mutation Optimizer) is an adaptive mutation algorithm that learns which mutation strategies work best for your target.
+
+### Enabling MOpt
+
+Use the `-L` option to enable MOpt:
+
+```bash
+afl-fuzz -L 0 -i input -o output -- ./target @@
+```
+
+<ParamField path="-L" type="integer">
+Set MOpt mode:
+- `0`: Enable MOpt mutator
+- Default: MOpt disabled
+</ParamField>
+
+### How MOpt Works
+
+MOpt uses a Particle Swarm Optimization (PSO) algorithm to:
+
+1. Track effectiveness of different mutation operators
+2. Dynamically adjust probability of using each operator
+3. Learn optimal mutation strategies during fuzzing
+4. Adapt to target-specific characteristics
+
+### When to Use MOpt
+
+<CardGroup cols={2}>
+
+<Card title="Use MOpt When" icon="circle-check">
+- Fuzzing complex targets with specific patterns
+- Long-running campaigns (MOpt needs time to learn)
+- You have diverse mutation needs
+- Target responds differently to mutation types
+</Card>
+
+<Card title="Skip MOpt When" icon="circle-xmark">
+- Short fuzzing runs (< 30 minutes)
+- Very simple targets
+- Custom mutators already optimized
+- Need maximum speed (MOpt has small overhead)
+</Card>
+
+</CardGroup>
+
+### MOpt in Parallel Campaigns
+
+Allocate **~10%** of fuzzer instances to MOpt:
+
+```bash
+# 10 total instances = 1 MOpt instance
+afl-fuzz -M main -i input -o output -- ./target @@
+afl-fuzz -S mopt1 -L 0 -i input -o output -- ./target @@
+afl-fuzz -S secondary2 -i input -o output -p fast -- ./target @@
+afl-fuzz -S secondary3 -i input -o output -p coe -- ./target @@
+# ... 6 more standard instances
+```
+
+## Cycle Schedules
+
+Switch to a different schedule every time a cycle is finished:
+
+```bash
+export AFL_CYCLE_SCHEDULES=1
+afl-fuzz -i input -o output -- ./target @@
+```
+
+<ParamField path="AFL_CYCLE_SCHEDULES" type="boolean">
+Automatically rotate through different power schedules after each queue cycle completes.
+</ParamField>
+
+<Warning>
+This can be unpredictable. Better to run multiple instances with different schedules.
+</Warning>
+
+## AFLfast Integration
+
+AFL++ integrates AFLfast power schedules (coe, lin, quad) from the research paper:
+
+> Marcel Böhme. ["Coverage-based Greybox Fuzzing as Markov Chain."](https://mboehme.github.io/paper/CCS16.pdf) CCS 2016.
+
+These schedules assign higher energy to:
+- **Low-frequency paths**: Rarely executed code
+- **Recently discovered paths**: Fresh queue entries
+- **Shorter execution paths**: Faster iterations
+
+## Comparison Table
+
+| Schedule | Speed | Exploration | Exploitation | Best For |
+|----------|-------|-------------|--------------|----------|
+| **explore** | Medium | High | Medium | General purpose, default |
+| **fast** | High | Medium | Low | Quick iterations, large corpus |
+| **coe** | Medium | High | Medium | Recent discoveries |
+| **lin** | Medium | Medium | Medium | Balanced approach |
+| **quad** | Medium | Low | High | Aggressive exploitation |
+| **exploit** | Low | Low | High | Deep path exploration |
+| **rare** | Low | High | Low | Edge cases, rare paths |
+
+## Best Practices
+
+<AccordionGroup>
+
+<Accordion title="For single-instance fuzzing">
+Use the default `explore` schedule unless you have specific requirements:
+
+```bash
+afl-fuzz -i input -o output -- ./target @@
+```
+</Accordion>
+
+<Accordion title="For parallel fuzzing">
+Distribute all schedules across instances for maximum diversity:
+
+- 1 main instance: `explore`
+- Secondaries: `fast`, `coe`, `lin`, `quad`, `exploit`, `rare`
+- Add MOpt to ~10% of instances
+</Accordion>
+
+<Accordion title="For CI/short runs">
+Use `fast` or `explore` for quick coverage:
+
+```bash
+afl-fuzz -i input -o output -p fast -- ./target @@
+```
+</Accordion>
+
+<Accordion title="For mature campaigns">
+Add more `exploit` and `rare` instances to find deeper bugs:
+
+```bash
+afl-fuzz -S exploit1 -i input -o output -p exploit -- ./target @@
+afl-fuzz -S rare1 -i input -o output -p rare -- ./target @@
+```
+</Accordion>
+
+</AccordionGroup>
+
+## Performance Impact
+
+Power schedules have minimal CPU overhead but significantly impact fuzzing strategy:
+
+- **CPU overhead**: < 1%
+- **Strategy impact**: Can change coverage growth by 20-50%
+- **Depends on target**: Some targets benefit more from specific schedules
+
+<Tip>
+Experiment with different schedules on your target. Monitor `paths total` and `uniq crashes` in the AFL++ UI to see which schedules perform best.
+</Tip>
+
+## Related Options
+
+<CardGroup cols={2}>
+
+<Card title="Custom Mutators" icon="puzzle-piece" href="/advanced/custom-mutators">
+Implement domain-specific mutations
+</Card>
+
+<Card title="Parallel Fuzzing" icon="server" href="/advanced/parallel-fuzzing">
+Run multiple instances efficiently
+</Card>
+
+<Card title="Environment Variables" icon="code" href="/advanced/environment-variables">
+Fine-tune AFL++ behavior
+</Card>
+
+<Card title="Dictionaries" icon="book" href="/advanced/dictionaries">
+Provide syntax hints to fuzzer
+</Card>
+
+</CardGroup>

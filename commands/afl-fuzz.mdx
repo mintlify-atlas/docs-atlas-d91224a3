@@ -1,0 +1,440 @@
+---
+title: afl-fuzz
+description: Main AFL++ fuzzing engine for discovering bugs through coverage-guided fuzzing
+---
+
+The `afl-fuzz` command is the core fuzzing engine of AFL++. It performs coverage-guided fuzzing to automatically discover crashes and hangs in target programs.
+
+## Synopsis
+
+```bash
+afl-fuzz -i seeds_dir -o output_dir [options] -- /path/to/target [target_args]
+```
+
+## Description
+
+`afl-fuzz` uses genetic algorithms and coverage feedback to evolve test cases that explore different execution paths in the target program. It monitors program behavior to detect crashes, hangs, and interesting code paths.
+
+## Required Parameters
+
+<ParamField path="-i" type="path" required>
+  Input directory containing seed test cases. Use `-i -` to resume a previous fuzzing session.
+  
+  ```bash
+  afl-fuzz -i seeds/ -o out/ -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-o" type="path" required>
+  Output directory where fuzzer will store findings, crashes, and stats.
+  
+  ```bash
+  afl-fuzz -i seeds/ -o findings/ -- ./target @@
+  ```
+</ParamField>
+
+## Execution Control
+
+<ParamField path="-t" type="number">
+  Timeout for each run in milliseconds (default: auto-scaled, usually 1000ms). Add '+' suffix to auto-calculate with this value as maximum.
+  
+  ```bash
+  afl-fuzz -i in -o out -t 2000 -- ./slow_target
+  afl-fuzz -i in -o out -t 2000+ -- ./target  # Auto-calculate, max 2000ms
+  ```
+</ParamField>
+
+<ParamField path="-m" type="number">
+  Memory limit for child process in megabytes (default: none).
+  
+  ```bash
+  afl-fuzz -i in -o out -m 512 -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-f" type="path">
+  Location where target reads input from (default: stdin). Use `@@` in target arguments as placeholder.
+  
+  ```bash
+  afl-fuzz -i in -o out -f /tmp/input -- ./target /tmp/input
+  # Or use @@ placeholder:
+  afl-fuzz -i in -o out -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-Q" type="boolean">
+  Use QEMU mode for fuzzing binary-only targets (Linux only).
+  
+  ```bash
+  afl-fuzz -i in -o out -Q -- ./binary_target
+  ```
+</ParamField>
+
+<ParamField path="-O" type="boolean">
+  Use FRIDA mode for fuzzing binary-only targets.
+  
+  ```bash
+  afl-fuzz -i in -o out -O -- ./binary_target
+  ```
+</ParamField>
+
+<ParamField path="-U" type="boolean">
+  Use Unicorn mode for fuzzing (Linux only).
+</ParamField>
+
+## Mutation Settings
+
+<ParamField path="-P" type="string">
+  Set fix mutation strategy: `explore` (focus on coverage) or `exploit` (focus on crashes). Can also be a number of seconds without finds before switching to exploit mode.
+  
+  ```bash
+  afl-fuzz -i in -o out -P explore -- ./target
+  afl-fuzz -i in -o out -P 3600 -- ./target  # Switch after 1 hour
+  ```
+</ParamField>
+
+<ParamField path="-p" type="string">
+  Power schedule for seed selection. Options: `explore` (default), `fast`, `exploit`, `seek`, `rare`, `mmopt`, `coe`, `lin`, `quad`.
+  
+  ```bash
+  afl-fuzz -i in -o out -p fast -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-g" type="number">
+  Set minimum length of generated fuzz input (default: 1).
+  
+  ```bash
+  afl-fuzz -i in -o out -g 10 -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-G" type="number">
+  Set maximum length of generated fuzz input (default: 1048576 = 1MB).
+  
+  ```bash
+  afl-fuzz -i in -o out -G 4096 -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-L" type="number">
+  Use MOpt(imize) mode with time limit in minutes. 0 = immediately, -1 = immediately with normal mutation.
+  
+  ```bash
+  afl-fuzz -i in -o out -L 0 -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-c" type="path">
+  Enable CmpLog by specifying a binary compiled with CmpLog instrumentation. Use `-c 0` if target has built-in CmpLog. Use `-c -` to disable.
+  
+  ```bash
+  # Separate CmpLog binary
+  afl-fuzz -i in -o out -c ./target.cmplog -- ./target
+  
+  # Built-in CmpLog
+  afl-fuzz -i in -o out -c 0 -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-l" type="string">
+  CmpLog configuration: `1`=small files, `2`=larger files (default), `3`=all files, `A`=arithmetic solving, `T`=transformational solving, `X`=extreme transform, `R`=random colorization.
+  
+  ```bash
+  afl-fuzz -i in -o out -c 0 -l 2ATR -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-x" type="path">
+  Fuzzer dictionary file (can be specified up to 4 times).
+  
+  ```bash
+  afl-fuzz -i in -o out -x dict.txt -x extra.txt -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-u" type="boolean">
+  Enable testcase splicing mutation.
+  
+  ```bash
+  afl-fuzz -i in -o out -u -- ./target
+  ```
+</ParamField>
+
+## Fuzzing Behavior
+
+<ParamField path="-n" type="boolean">
+  Fuzz without instrumentation (dumb mode).
+  
+  ```bash
+  afl-fuzz -i in -o out -n -- ./uninstrumented_target
+  ```
+</ParamField>
+
+<ParamField path="-Z" type="boolean">
+  Sequential queue selection instead of weighted random.
+  
+  ```bash
+  afl-fuzz -i in -o out -Z -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-N" type="boolean">
+  Do not unlink the fuzzing input file (useful for devices).
+  
+  ```bash
+  afl-fuzz -i in -o out -N -- ./target /dev/input
+  ```
+</ParamField>
+
+## Parallel Fuzzing
+
+<ParamField path="-M" type="string">
+  Distributed mode - main fuzzer instance. Sets deterministic mode and disables trimming.
+  
+  ```bash
+  afl-fuzz -i in -o sync -M main01 -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-S" type="string">
+  Distributed mode - secondary fuzzer instance.
+  
+  ```bash
+  afl-fuzz -i in -o sync -S secondary01 -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-F" type="path">
+  Sync to a foreign fuzzer queue directory (requires -M, can be specified up to 32 times).
+  
+  ```bash
+  afl-fuzz -i in -o sync -M main -F ../other_fuzzer/queue -- ./target
+  ```
+</ParamField>
+
+## Test Settings
+
+<ParamField path="-s" type="number">
+  Use a fixed seed for the RNG (for reproducibility).
+  
+  ```bash
+  afl-fuzz -i in -o out -s 12345 -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-V" type="number">
+  Fuzz for a specified time in seconds then terminate.
+  
+  ```bash
+  afl-fuzz -i in -o out -V 3600 -- ./target  # Fuzz for 1 hour
+  ```
+</ParamField>
+
+<ParamField path="-E" type="number">
+  Fuzz for an approximate number of total executions then terminate.
+  
+  ```bash
+  afl-fuzz -i in -o out -E 1000000 -- ./target
+  ```
+</ParamField>
+
+## Other Options
+
+<ParamField path="-T" type="string">
+  Text banner to show on the screen.
+  
+  ```bash
+  afl-fuzz -i in -o out -T "Project X Fuzzing" -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-I" type="string">
+  Execute this command/script when a new crash is found.
+  
+  ```bash
+  afl-fuzz -i in -o out -I ./notify.sh -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-C" type="boolean">
+  Crash exploration mode (Peruvian Rabbit mode).
+  
+  ```bash
+  afl-fuzz -i crashes/ -o out -C -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-b" type="number">
+  Bind fuzzing process to specific CPU core.
+  
+  ```bash
+  afl-fuzz -i in -o out -b 3 -- ./target
+  ```
+</ParamField>
+
+<ParamField path="-e" type="string">
+  File extension for the fuzz test input file.
+  
+  ```bash
+  afl-fuzz -i in -o out -e png -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-z" type="boolean">
+  Skip the enhanced deterministic fuzzing stage.
+  
+  ```bash
+  afl-fuzz -i in -o out -z -- ./target
+  ```
+</ParamField>
+
+## Examples
+
+### Basic Fuzzing
+
+```bash
+# Fuzz with file input
+afl-fuzz -i seeds/ -o findings/ -- ./target @@
+
+# Fuzz with stdin
+afl-fuzz -i seeds/ -o findings/ -- ./target
+```
+
+### CmpLog Mode
+
+```bash
+# Build target
+afl-cc -o target target.c
+AFL_LLVM_CMPLOG=1 afl-cc -o target.cmplog target.c
+
+# Fuzz with CmpLog
+afl-fuzz -i seeds/ -o out/ -c ./target.cmplog -- ./target @@
+```
+
+### Parallel Fuzzing
+
+```bash
+# Terminal 1 - Main instance
+afl-fuzz -i seeds/ -o sync/ -M fuzzer01 -- ./target @@
+
+# Terminal 2 - Secondary instance
+afl-fuzz -i seeds/ -o sync/ -S fuzzer02 -- ./target @@
+
+# Terminal 3 - Another secondary
+afl-fuzz -i seeds/ -o sync/ -S fuzzer03 -- ./target @@
+```
+
+### Binary-Only Fuzzing (QEMU)
+
+```bash
+afl-fuzz -i seeds/ -o out/ -Q -- ./closed_source_binary @@
+```
+
+### With Dictionary
+
+```bash
+afl-fuzz -i seeds/ -o out/ -x keywords.dict -- ./target @@
+```
+
+### Resume Fuzzing
+
+```bash
+# Resume from previous session
+afl-fuzz -i - -o out/ -- ./target @@
+
+# Or with AFL_AUTORESUME
+AFL_AUTORESUME=1 afl-fuzz -i seeds/ -o out/ -- ./target @@
+```
+
+## Environment Variables
+
+See the [Environment Variables](/advanced/environment-variables) page for comprehensive list. Key variables:
+
+- `AFL_AUTORESUME` - Resume fuzzing automatically
+- `AFL_FAST_CAL` - Speed up calibration stage
+- `AFL_IGNORE_PROBLEMS` - Continue despite setup issues  
+- `AFL_NO_UI` - Disable status screen
+- `AFL_TMPDIR` - Use ramdisk for temporary files
+- `AFL_CUSTOM_MUTATOR_LIBRARY` - Custom mutation library
+
+## Output Directory Structure
+
+```
+out/
+├── fuzzer_stats          # Real-time statistics
+├── plot_data             # Data for afl-plot
+├── queue/                # Interesting test cases
+│   ├── id:000000,*       # Seed inputs
+│   └── id:000001,*       # Generated inputs
+├── crashes/              # Crashing inputs
+│   ├── id:000000,*       # First crash
+│   └── README.txt        # Crash triage info
+├── hangs/                # Hanging inputs  
+└── .cur_input            # Currently tested input
+```
+
+## Status Screen
+
+The AFL++ status screen shows:
+
+- **Overall results** - Paths found, crashes, hangs
+- **Cycle progress** - Current fuzzing stage
+- **Map coverage** - Edge coverage statistics  
+- **Stage progress** - Current mutation strategy
+- **Findings in depth** - New paths, crashes per time
+- **Fuzzing strategy** - Current power schedule
+- **Path geometry** - Corpus characteristics
+- **CPU load** - System resource usage
+
+## Tips
+
+### Seed Selection
+
+Provide small, diverse seed files:
+
+```bash
+# Good: small, valid inputs
+ls -lh seeds/
+-rw-r--r-- 1 user user  128 Dec 1 10:00 sample1.dat
+-rw-r--r-- 1 user user  256 Dec 1 10:00 sample2.dat
+
+# Bad: huge files
+-rw-r--r-- 1 user user  10M Dec 1 10:00 huge.dat
+```
+
+### Performance Tuning
+
+```bash
+# Use ramdisk for temporary files
+mkdir /tmp/ramdisk
+sudo mount -t tmpfs -o size=512M tmpfs /tmp/ramdisk
+AFL_TMPDIR=/tmp/ramdisk afl-fuzz -i in -o out -- ./target
+
+# System configuration
+sudo afl-system-config
+
+# Check CPU availability  
+afl-gotcpu
+```
+
+### Crash Triage
+
+```bash
+# Minimize crashing input
+afl-tmin -i out/crashes/id:000000,* -o crash.min -- ./target @@
+
+# Check if crash reproduces
+./target crash.min
+
+# Debug with GDB
+gdb --args ./target crash.min
+```
+
+## See Also
+
+- [afl-cc](/commands/afl-cc) - Compiler wrapper
+- [afl-cmin](/commands/afl-cmin) - Corpus minimizer
+- [afl-tmin](/commands/afl-tmin) - Test case minimizer
+- [afl-showmap](/commands/afl-showmap) - Coverage analysis
+- [afl-whatsup](/commands/afl-whatsup) - Multi-fuzzer status

@@ -1,0 +1,437 @@
+---
+title: 'Custom Mutators'
+description: 'Building custom mutators to extend AFL++ fuzzing capabilities'
+icon: 'puzzle-piece'
+---
+
+Custom mutators allow you to implement domain-specific mutations beyond AFL++'s built-in strategies. This enables structure-aware fuzzing for complex formats like XML, protobuf, or grammar-based inputs.
+
+## Overview
+
+Custom mutators are passed to `afl-fuzz` via environment variables and must export specific functions. AFL++ supports:
+
+- **C/C++ libraries** (`.so` files)
+- **Python modules**
+- **Rust** (experimental support in `custom_mutators/rust`)
+
+The custom mutation stage runs as the first non-deterministic stage, right before havoc.
+
+## Multiple Mutators
+
+You can chain multiple custom mutators together:
+
+```bash
+export AFL_CUSTOM_MUTATOR_LIBRARY="/path/to/mutator_first.so;/path/to/mutator_second.so"
+```
+
+Functions are called in the order specified.
+
+## API Reference
+
+### C/C++ API
+
+<Warning>
+If you need to increase the size of an `out_buf` buffer, you **must** use `afl_realloc()`. Include `include/alloc-inl.h` or afl-fuzz will crash when freeing buffers.
+</Warning>
+
+<CodeGroup>
+
+```c Initialization
+void *afl_custom_init(afl_state_t *afl, unsigned int seed);
+```
+
+```c Core Fuzzing
+size_t afl_custom_fuzz(
+    void *data,
+    unsigned char *buf,
+    size_t buf_size,
+    unsigned char **out_buf,
+    unsigned char *add_buf,
+    size_t add_buf_size,
+    size_t max_size
+);
+
+unsigned int afl_custom_fuzz_count(void *data, const unsigned char *buf, size_t buf_size);
+void afl_custom_splice_optout(void *data);
+```
+
+```c Post-Processing
+size_t afl_custom_post_process(
+    void *data,
+    unsigned char *buf,
+    size_t buf_size,
+    unsigned char **out_buf
+);
+```
+
+```c Trimming
+int afl_custom_init_trim(void *data, unsigned char *buf, size_t buf_size);
+size_t afl_custom_trim(void *data, unsigned char **out_buf);
+int afl_custom_post_trim(void *data, unsigned char success);
+```
+
+```c Havoc Integration
+size_t afl_custom_havoc_mutation(
+    void *data,
+    unsigned char *buf,
+    size_t buf_size,
+    unsigned char **out_buf,
+    size_t max_size
+);
+
+unsigned char afl_custom_havoc_mutation_probability(void *data);
+```
+
+```c Additional Hooks
+const char *afl_custom_describe(void *data, size_t max_description_len);
+unsigned char afl_custom_queue_get(void *data, const unsigned char *filename);
+void (*afl_custom_fuzz_send)(void *data, const u8 *buf, size_t buf_size);
+u8 afl_custom_queue_new_entry(void *data, const unsigned char *filename_new_queue, const unsigned int *filename_orig_queue);
+const char* afl_custom_introspection(my_mutator_t *data);
+void afl_custom_deinit(void *data);
+```
+
+</CodeGroup>
+
+### Python API
+
+<CodeGroup>
+
+```python Initialization
+def init(seed):
+    """Called when AFL++ starts up. Seed RNG and set up state."""
+    pass
+```
+
+```python Core Fuzzing
+def fuzz(buf, add_buf, max_size):
+    """Perform custom mutation on input.
+    
+    Args:
+        buf: Input buffer to mutate
+        add_buf: Contents of another queue item for splicing (can be ignored)
+        max_size: Maximum size of output
+        
+    Returns:
+        Mutated output (returning length 0 skips this mutation)
+    """
+    return mutated_out
+
+def fuzz_count(buf):
+    """Return number of fuzzing attempts for this input."""
+    return cnt
+
+def splice_optout():
+    """If present, no splicing target is passed to fuzz()."""
+    pass
+```
+
+```python Post-Processing
+def post_process(buf):
+    """Transform mutated data before execution.
+    
+    Use this to convert from mutation format to target format.
+    Example: protobuf -> plain text.
+    
+    Return NULL/empty to skip sending to target.
+    DO NOT make random changes here!
+    """
+    return out_buf
+```
+
+```python Trimming
+def init_trim(buf):
+    """Return number of trimming iteration steps."""
+    return cnt
+
+def trim():
+    """Return trimmed input buffer."""
+    return out_buf
+
+def post_trim(success):
+    """Called after each trim. Return next iteration index."""
+    return next_index
+```
+
+```python Additional Functions
+def describe(max_description_length):
+    """Describe current test case (used for naming crash files)."""
+    return "description_of_current_mutation"
+
+def havoc_mutation(buf, max_size):
+    """Single mutation stacked with others in havoc."""
+    return mutated_out
+
+def havoc_mutation_probability():
+    """Return probability (0-100) that havoc_mutation is called. Default: 6%."""
+    return probability
+
+def queue_get(filename):
+    """Determine if AFL++ should fuzz this queue entry."""
+    return True
+
+def fuzz_send(buf):
+    """Send data to target yourself (e.g., via IPC)."""
+    pass
+
+def queue_new_entry(filename_new_queue, filename_orig_queue):
+    """Called after adding new test case. Return True if contents changed."""
+    return False
+
+def introspection():
+    """Return string reporting exact mutations used."""
+    return string
+
+def deinit():
+    """Cleanup (optional in Python)."""
+    pass
+```
+
+</CodeGroup>
+
+## Function Details
+
+### init (optional in Python)
+
+Seeds RNG and sets up buffers and state when AFL++ starts.
+
+### queue_get (optional)
+
+Determines whether AFL++ should fuzz the current queue entry with all mutators.
+
+### fuzz_count (optional)
+
+Overrides AFL++'s calculation of fuzzing attempts for a queue entry. Most useful when **not** using `AFL_CUSTOM_MUTATOR_ONLY`.
+
+### splice_optout (optional)
+
+If this function exists (never called, just needs to be present), no splicing target is passed to `fuzz()`. Saves time if splicing data isn't needed.
+
+### fuzz (optional)
+
+Performs your custom mutations. The `add_buf` can be used for splicing or ignored (define `splice_optout` if ignoring). Returning length 0 skips this mutation result.
+
+<Note>
+For non-Python: the returned output buffer is under **your** memory management!
+</Note>
+
+### describe (optional)
+
+Describes the current test case generated by the last mutation. Called to name crash files, helping reproduce crashing mutations.
+
+### havoc_mutation & havoc_mutation_probability (optional)
+
+`havoc_mutation` performs a single custom mutation stacked with others in havoc. `havoc_mutation_probability` returns the probability (default 6%) that it's called.
+
+### post_process (optional)
+
+Transforms mutated data into the format expected by the target. For example, converting protobuf format to plain text.
+
+<CodeGroup>
+
+```python Example Use Case
+# libprotobuf-mutator scenario:
+# Mutator returns protobuf format
+# Target expects plain text
+# post_process converts protobuf -> text
+
+def post_process(buf):
+    # Convert protobuf to plain text
+    plaintext = protobuf_to_text(buf)
+    
+    # Skip if too short or corrupted
+    if len(plaintext) < 10:
+        return b""  # Return empty to skip
+    
+    return plaintext
+```
+
+</CodeGroup>
+
+<Warning>
+**Do NOT** make random changes in `post_process`! This is for format conversion only.
+
+For C/C++: If possible, make changes in-place (`*outbuf = data`) for best performance.
+</Warning>
+
+You can return NULL/empty buffer and zero length to prevent sending to target (e.g., if too short/corrupted).
+
+### fuzz_send (optional)
+
+Send data to the target yourself (e.g., via IPC). Replaces some usage of `utils/afl_proxy` but requires starting the target with afl-fuzz.
+
+Set `AFL_CUSTOM_MUTATOR_LATE_SEND` to call `afl_custom_fuzz_send()` after the target restarts (needed for TCP services).
+
+Example: `custom_mutators/examples/custom_send.c`
+
+### queue_new_entry (optional)
+
+Called after adding a new test case to the queue. Return True if file contents were changed.
+
+### introspection (optional)
+
+Called after discovering a new queue entry, crash, or timeout (if compiled with INTROSPECTION). Return a string reporting exact mutations used.
+
+### deinit (optional in Python)
+
+Last method called, for cleanup.
+
+## Trimming Support
+
+Generic AFL++ trimming can destroy complex format structures. Implement custom trimming to avoid broken test cases.
+
+<Steps>
+
+<Step title="init_trim">
+Receives initial buffer, returns number of iteration steps possible.
+
+- Remove elements one-by-one: return `n`
+- Binary search: return `log(n)`
+- Unknown steps: return `1`, then return `0` in `post_trim` until done
+</Step>
+
+<Step title="trim">
+Called for each trimming operation. No arguments (state from `init_trim` is in data variables). Returns trimmed input buffer.
+</Step>
+
+<Step title="post_trim">
+Informs if trimming step was successful. Reset to last known good state on failure. Return next trim iteration index (0 to max from `init_trim`).
+</Step>
+
+</Steps>
+
+<Warning>
+Omitting **any** of the three trimming methods disables custom trimming and falls back to built-in trimming.
+
+If you have a custom `post_process` mutator, you must call it yourself at the end of successful trimming!
+</Warning>
+
+## Environment Variables
+
+<ParamField path="AFL_CUSTOM_MUTATOR_ONLY" type="boolean">
+Disable all other mutation stages. Use only the custom mutator. Best combined with custom trimming to prevent broken test cases.
+</ParamField>
+
+<ParamField path="AFL_CUSTOM_MUTATOR_LIBRARY" type="string">
+Path to C/C++ shared library (`.so`). Supports multiple mutators separated by semicolons.
+
+```bash
+export AFL_CUSTOM_MUTATOR_LIBRARY="/path/to/first.so;/path/to/second.so"
+```
+</ParamField>
+
+<ParamField path="AFL_PYTHON_MODULE" type="string">
+Python module name (not path). Set `PYTHONPATH` to the directory containing the module.
+
+```bash
+export PYTHONPATH=/path/to/directory
+export AFL_PYTHON_MODULE=example
+```
+</ParamField>
+
+<ParamField path="AFL_DEBUG" type="boolean">
+With `AFL_NO_UI`, emits additional messages about custom trimmer performance and actions.
+</ParamField>
+
+## Helper Environment Variables
+
+For mutators in Python, Rust, GO, etc., AFL++ sets these variables:
+
+<ParamField path="AFL_CUSTOM_INFO_PROGRAM" type="string">
+The target program name. Contains the actual target even in QEMU mode (`-Q`).
+</ParamField>
+
+<ParamField path="AFL_CUSTOM_INFO_PROGRAM_INPUT" type="string">
+The input file path if `-f` parameter is used with afl-fuzz.
+</ParamField>
+
+<ParamField path="AFL_CUSTOM_INFO_PROGRAM_ARGV" type="string">
+Parameters given to the target program, still contains `@@` identifier.
+</ParamField>
+
+<ParamField path="AFL_CUSTOM_INFO_OUT" type="string">
+Output directory for this fuzzer instance. E.g., if called with `-o out -S foobar`, this is `out/foobar`.
+</ParamField>
+
+<Note>
+If `AFL_CUSTOM_INFO_PROGRAM_INPUT` is empty and `AFL_CUSTOM_INFO_PROGRAM_ARGV` doesn't contain `@@`, the target gets input via stdin.
+</Note>
+
+## Compilation & Usage
+
+### C/C++ Custom Mutator
+
+<Steps>
+
+<Step title="Compile as shared object">
+```bash
+gcc -shared -Wall -O3 example.c -o example.so
+```
+</Step>
+
+<Step title="Run afl-fuzz">
+```bash
+export AFL_CUSTOM_MUTATOR_LIBRARY="/full/path/to/example.so"
+afl-fuzz -i input -o output -- /path/to/program @@
+```
+</Step>
+
+</Steps>
+
+### Python Custom Mutator
+
+<Steps>
+
+<Step title="Install Python development package">
+```bash
+sudo apt install python3-dev
+```
+</Step>
+
+<Step title="Compile AFL++ with Python support">
+The Makefile auto-detects Python3 via `python-config`/`python3-config`.
+
+For non-standard setups:
+```bash
+PYTHON_INCLUDE=/path/to/python/include LDFLAGS=-L/path/to/python/lib make
+```
+</Step>
+
+<Step title="Run afl-fuzz">
+```bash
+export PYTHONPATH=`dirname /full/path/to/example.py`
+export AFL_PYTHON_MODULE=example
+afl-fuzz -i input -o output -- /path/to/program @@
+```
+</Step>
+
+</Steps>
+
+## Examples
+
+<CardGroup cols={2}>
+
+<Card title="C Example" icon="c" href="https://github.com/AFLplusplus/AFLplusplus/blob/stable/custom_mutators/examples/example.c">
+Complete C/C++ custom mutator example
+</Card>
+
+<Card title="Python Example" icon="python" href="https://github.com/AFLplusplus/AFLplusplus/blob/stable/custom_mutators/examples/example.py">
+Complete Python custom mutator example
+</Card>
+
+<Card title="Custom Send" icon="paper-plane" href="https://github.com/AFLplusplus/AFLplusplus/blob/stable/custom_mutators/examples/custom_send.c">
+Example using fuzz_send for IPC
+</Card>
+
+<Card title="Rust Support" icon="rust" href="https://github.com/AFLplusplus/AFLplusplus/tree/stable/custom_mutators/rust">
+Experimental Rust custom mutators
+</Card>
+
+</CardGroup>
+
+## Additional Resources
+
+- [libprotobuf-mutator with AFL++](https://github.com/bruce30262/libprotobuf-mutator_fuzzing_learning/tree/master/4_libprotobuf_aflpp_custom_mutator)
+- [afl-libprotobuf-mutator](https://github.com/thebabush/afl-libprotobuf-mutator)
+- [XML Fuzzing presentation](https://www.agarri.fr/docs/XML_Fuzzing-NullCon2017-PUBLIC.pdf)
+- [Chromium bug found with XML mutators](https://bugs.chromium.org/p/chromium/issues/detail?id=930663)

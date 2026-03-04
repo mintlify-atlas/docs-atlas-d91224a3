@@ -1,0 +1,1228 @@
+---
+title: 'Environment Variables'
+description: 'Complete reference of AFL++ environment variables for fine-tuning fuzzing behavior'
+icon: 'code'
+---
+
+AFL++ exposes extensive functionality through environment variables, allowing you to customize compilation, instrumentation, and runtime behavior without modifying source code.
+
+<Note>
+Most AFL++ tools warn about unknown AFL_* environment variables (e.g., typos). Set `AFL_IGNORE_UNKNOWN_ENVS` to disable these warnings.
+</Note>
+
+## Compiler Settings
+
+These variables control AFL++ compiler behavior (`afl-cc`, `afl-clang-fast`, `afl-clang-lto`, `afl-gcc-fast`).
+
+### Compiler Selection
+
+<ParamField path="AFL_CC_COMPILER" type="enum" default="auto">
+Select instrumentation mode:
+- `GCC_PLUGIN`: afl-g*-fast
+- `LLVM`: afl-clang-fast*
+- `LTO`: afl-clang-lto*
+
+```bash
+export AFL_CC_COMPILER=LTO
+```
+</ParamField>
+
+<ParamField path="AFL_CC" type="path">
+Downstream C compiler to use instead of default `clang` or `gcc`.
+
+```bash
+export AFL_CC=/usr/bin/clang-14
+```
+</ParamField>
+
+<ParamField path="AFL_CXX" type="path">
+Downstream C++ compiler to use instead of default `clang++` or `g++`.
+
+```bash
+export AFL_CXX=/usr/bin/clang++-14
+```
+</ParamField>
+
+<ParamField path="AFL_COMPILER_LAUNCHER" type="string">
+Prepend a command to compiler invocations (e.g., `ccache` for faster recompilation).
+
+```bash
+export AFL_COMPILER_LAUNCHER=ccache
+```
+</ParamField>
+
+### Optimization Settings
+
+<ParamField path="AFL_DONT_OPTIMIZE" type="boolean">
+Disable automatic `-O3` optimization. Use if `-Werror` causes issues with optimization warnings.
+
+```bash
+export AFL_DONT_OPTIMIZE=1
+```
+</ParamField>
+
+<ParamField path="AFL_OPT_LEVEL" type="string" default="3">
+Set optimization level (e.g., `z` for `-Oz`, `s` for `-Os`).
+
+```bash
+export AFL_OPT_LEVEL=z
+```
+</ParamField>
+
+<ParamField path="AFL_NOOPT" type="boolean">
+Compile without AFL++ instrumentation (useful for `./configure` scripts). **Unset** before building the actual target!
+
+```bash
+export AFL_NOOPT=1
+./configure --disable-shared
+unset AFL_NOOPT
+make
+```
+</ParamField>
+
+### Hardening
+
+<ParamField path="AFL_HARDEN" type="boolean">
+Automatically add hardening options: `-D_FORTIFY_SOURCE=2` and `-fstack-protector-all`. Minor performance loss (~5%).
+
+```bash
+export AFL_HARDEN=1
+```
+</ParamField>
+
+### Instrumentation Control
+
+<ParamField path="AFL_INST_RATIO" type="integer (0-100)">
+Instrument only a percentage of branches. Useful for very complex programs (ffmpeg, perl, v8). `0` = function transitions only.
+
+```bash
+export AFL_INST_RATIO=50  # Instrument 50% of branches
+```
+
+<Warning>
+Outdated option. Only LLVM CLASSIC mode supports this.
+</Warning>
+</ParamField>
+
+<ParamField path="AFL_NO_BUILTIN" type="boolean">
+Generate code suitable for `libtokencap.so` (slightly slower).
+
+```bash
+export AFL_NO_BUILTIN=1
+```
+</ParamField>
+
+### Output Control
+
+<ParamField path="AFL_QUIET" type="boolean">
+Suppress afl-cc/afl-as banners during compilation.
+
+```bash
+export AFL_QUIET=1
+```
+</ParamField>
+
+<ParamField path="AFL_DEBUG" type="boolean">
+Force output even when stdout/stderr are redirected. Useful for debugging build issues.
+
+```bash
+export AFL_DEBUG=1
+```
+</ParamField>
+
+### Sanitizers
+
+<ParamField path="AFL_USE_ASAN" type="boolean">
+Enable AddressSanitizer (memory corruption detection).
+
+```bash
+export AFL_USE_ASAN=1
+```
+</ParamField>
+
+<ParamField path="AFL_USE_MSAN" type="boolean">
+Enable MemorySanitizer (uninitialized memory detection).
+
+```bash
+export AFL_USE_MSAN=1
+```
+</ParamField>
+
+<ParamField path="AFL_USE_UBSAN" type="boolean">
+Enable UndefinedBehaviorSanitizer.
+
+```bash
+export AFL_USE_UBSAN=1
+```
+</ParamField>
+
+<ParamField path="AFL_UBSAN_VERBOSE" type="boolean">
+Output detailed diagnostics for undefined behavior (instead of just "Illegal Instruction").
+
+```bash
+export AFL_UBSAN_VERBOSE=1
+```
+
+<Warning>
+Verbose output significantly slows fuzzing. Use only for debugging.
+</Warning>
+</ParamField>
+
+<ParamField path="AFL_USE_CFISAN" type="boolean">
+Enable Control Flow Integrity Sanitizer (type confusion detection).
+
+```bash
+export AFL_USE_CFISAN=1
+```
+</ParamField>
+
+<ParamField path="AFL_CFISAN_VERBOSE" type="boolean">
+Output detailed CFI violation information.
+
+```bash
+export AFL_CFISAN_VERBOSE=1
+```
+</ParamField>
+
+<ParamField path="AFL_USE_TSAN" type="boolean">
+Enable ThreadSanitizer (race condition detection).
+
+```bash
+export AFL_USE_TSAN=1
+```
+</ParamField>
+
+<ParamField path="AFL_USE_LSAN" type="boolean">
+Enable LeakSanitizer. Requires `__AFL_LEAK_CHECK();` in target code.
+
+```bash
+export AFL_USE_LSAN=1
+```
+</ParamField>
+
+<ParamField path="AFL_USE_RTSAN" type="boolean">
+Enable RealtimeSanitizer (requires clang 20+).
+
+```bash
+export AFL_USE_RTSAN=1
+```
+</ParamField>
+
+### Paths
+
+<ParamField path="AFL_PATH" type="path">
+Directory containing AFL++ runtime objects, plugins, and QEMU/Frida support files.
+
+```bash
+export AFL_PATH=/usr/local/lib/afl
+```
+</ParamField>
+
+<ParamField path="TMPDIR" type="path" default="/tmp">
+Directory for temporary files used by afl-as.
+
+```bash
+export TMPDIR=/ramdisk/tmp
+```
+</ParamField>
+
+## LLVM/LTO Instrumentation
+
+These variables are specific to `afl-clang-fast`, `afl-clang-lto`, and LLVM modes.
+
+### Instrumentation Mode
+
+<ParamField path="AFL_LLVM_INSTRUMENT" type="enum">
+Select instrumentation type. Options:
+- `CLASSIC`: Classic AFL (colliding coverage)
+- `PCGUARD`: pcguard-based (default, non-colliding)
+- `NATIVE`: Clang's original pcguard
+- `CTX`: Context-sensitive coverage
+- `NGRAM-X`: N-gram coverage (X = 2-16)
+- `LTO`: LTO instrumentation
+- `CFG`: Control Flow Graph (LTO mode)
+
+Combine with comma: `CLASSIC,CTX,NGRAM-4`
+
+```bash
+export AFL_LLVM_INSTRUMENT=PCGUARD,CTX
+```
+</ParamField>
+
+### CMPLOG
+
+<ParamField path="AFL_LLVM_CMPLOG" type="boolean">
+Produce a CMPLOG instrumented binary for input-to-state correspondence.
+
+```bash
+export AFL_LLVM_CMPLOG=1
+CC=afl-clang-fast ./configure && make
+```
+</ParamField>
+
+<ParamField path="AFL_GCC_CMPLOG" type="boolean">
+CMPLOG for afl-gcc-fast.
+
+```bash
+export AFL_GCC_CMPLOG=1
+```
+</ParamField>
+
+### Context-Sensitive Coverage
+
+<ParamField path="AFL_LLVM_CTX" type="boolean">
+Activate context-sensitive branch coverage (each edge combined with caller).
+
+```bash
+export AFL_LLVM_CTX=1
+```
+
+<Tip>
+Increase `MAP_SIZE_POW2` in config.h to 18-20 to reduce collisions.
+</Tip>
+</ParamField>
+
+### N-gram Coverage
+
+<ParamField path="AFL_LLVM_NGRAM_SIZE" type="integer (2-16)">
+Activate N-gram previous location coverage.
+
+```bash
+export AFL_LLVM_NGRAM_SIZE=4
+```
+</ParamField>
+
+### LAF-Intel / COMPCOV
+
+<ParamField path="AFL_LLVM_LAF_ALL" type="boolean">
+Enable all LAF-Intel transformations (split compares, switches, floats).
+
+```bash
+export AFL_LLVM_LAF_ALL=1
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_LAF_SPLIT_COMPARES" type="boolean">
+Split integer comparisons (64/32/16-bit CMP instructions).
+
+```bash
+export AFL_LLVM_LAF_SPLIT_COMPARES=1
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_LAF_SPLIT_SWITCHES" type="boolean">
+Split `switch` constructs.
+
+```bash
+export AFL_LLVM_LAF_SPLIT_SWITCHES=1
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_LAF_SPLIT_FLOATS" type="boolean">
+Split floating point comparisons (requires `AFL_LLVM_LAF_SPLIT_COMPARES`).
+
+```bash
+export AFL_LLVM_LAF_SPLIT_FLOATS=1
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_LAF_TRANSFORM_COMPARES" type="boolean">
+Transform string comparison functions.
+
+```bash
+export AFL_LLVM_LAF_TRANSFORM_COMPARES=1
+```
+</ParamField>
+
+### Dictionary Generation
+
+<ParamField path="AFL_LLVM_DICT2FILE" type="path">
+Write constant string comparisons to dictionary file.
+
+```bash
+export AFL_LLVM_DICT2FILE=/path/to/output.dict
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_DICT2FILE_NO_MAIN" type="boolean">
+Skip parsing `main()` when generating dictionary.
+
+```bash
+export AFL_LLVM_DICT2FILE_NO_MAIN=1
+```
+</ParamField>
+
+### Selective Instrumentation
+
+<ParamField path="AFL_LLVM_ALLOWLIST" type="path">
+Instrument **only** files/functions listed in this file.
+
+```bash
+export AFL_LLVM_ALLOWLIST=allowlist.txt
+```
+
+Format (one per line):
+```text
+foo.cpp
+fun: specific_function
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_DENYLIST" type="path">
+Skip instrumenting files/functions listed in this file.
+
+```bash
+export AFL_LLVM_DENYLIST=denylist.txt
+```
+</ParamField>
+
+### Injection Detection
+
+<ParamField path="AFL_LLVM_INJECTIONS_ALL" type="boolean">
+Enable all injection vulnerability hooks (SQL, LDAP, XSS).
+
+```bash
+export AFL_LLVM_INJECTIONS_ALL=1
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_INJECTIONS_SQL" type="boolean">
+Enable SQL injection hooks.
+
+```bash
+export AFL_LLVM_INJECTIONS_SQL=1
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_INJECTIONS_LDAP" type="boolean">
+Enable LDAP injection hooks.
+
+```bash
+export AFL_LLVM_INJECTIONS_LDAP=1
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_INJECTIONS_XSS" type="boolean">
+Enable XSS injection hooks in libxml2.
+
+```bash
+export AFL_LLVM_INJECTIONS_XSS=1
+```
+</ParamField>
+
+### Advanced LLVM Options
+
+<ParamField path="AFL_LLVM_NOT_ZERO" type="boolean">
+Use counters that skip zero on overflow (default for LLVM ≥ 9).
+
+```bash
+export AFL_LLVM_NOT_ZERO=1
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_SKIP_NEVERZERO" type="boolean">
+Disable never-zero counter test (small performance boost for targets with few loops).
+
+```bash
+export AFL_LLVM_SKIP_NEVERZERO=1
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_THREADSAFE_INST" type="boolean">
+Inject thread-safe instrumentation counters (disables neverzero).
+
+```bash
+export AFL_LLVM_THREADSAFE_INST=1
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_DENY_EXEC" type="boolean">
+Abort when any `exec*` function is called (prevents coverage map corruption).
+
+```bash
+export AFL_LLVM_DENY_EXEC=1
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_NO_RPATH" type="boolean">
+Disable setting rpath when LLVM is not in a standard location.
+
+```bash
+export AFL_LLVM_NO_RPATH=1
+```
+</ParamField>
+
+### LTO Mode Specific
+
+<ParamField path="AFL_LLVM_MAP_ADDR" type="hex address">
+Set fixed map address (default: `0x10000`). Use `0` for dynamic (slower).
+
+```bash
+export AFL_LLVM_MAP_ADDR=0x20000
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_DOCUMENT_IDS" type="path">
+Document which edge ID was assigned to which function.
+
+```bash
+export AFL_LLVM_DOCUMENT_IDS=edge_mapping.txt
+```
+</ParamField>
+
+<ParamField path="AFL_LLVM_LTO_STARTID" type="integer" default="1">
+Starting location ID for instrumentation.
+
+```bash
+export AFL_LLVM_LTO_STARTID=1000
+```
+</ParamField>
+
+## GCC Plugin Settings
+
+<ParamField path="AFL_GCC_INSTRUMENT_FILE" type="path">
+Instrument only files listed (GCC_PLUGIN mode). Alias: `AFL_GCC_ALLOWLIST`.
+
+```bash
+export AFL_GCC_ALLOWLIST=allowlist.txt
+```
+</ParamField>
+
+<ParamField path="AFL_GCC_DENYLIST" type="path">
+Skip files/functions listed (GCC_PLUGIN mode).
+
+```bash
+export AFL_GCC_DENYLIST=denylist.txt
+```
+</ParamField>
+
+<ParamField path="AFL_GCC_OUT_OF_LINE" type="boolean">
+Use subroutine calls instead of inline instrumentation (slower).
+
+```bash
+export AFL_GCC_OUT_OF_LINE=1
+```
+</ParamField>
+
+<ParamField path="AFL_GCC_SKIP_NEVERZERO" type="boolean">
+Disable never-zero counter test in GCC mode.
+
+```bash
+export AFL_GCC_SKIP_NEVERZERO=1
+```
+</ParamField>
+
+<ParamField path="AFL_KEEP_ASSEMBLY" type="boolean">
+Prevent afl-as from deleting instrumented assembly files (GCC mode only).
+
+```bash
+mkdir assembly_output
+export TMPDIR=$PWD/assembly_output
+export AFL_KEEP_ASSEMBLY=1
+```
+</ParamField>
+
+## Runtime Settings (Instrumented Binaries)
+
+<ParamField path="AFL_DUMP_MAP_SIZE" type="boolean">
+Dump the map size of the target and exit.
+
+```bash
+AFL_DUMP_MAP_SIZE=1 ./target
+```
+</ParamField>
+
+<ParamField path="AFL_OLD_FORKSERVER" type="boolean">
+Use vanilla AFL forkserver (for compatibility with other tools like symcc).
+
+```bash
+export AFL_OLD_FORKSERVER=1
+```
+</ParamField>
+
+<ParamField path="AFL_DISABLE_LLVM_INSTRUMENTATION" type="boolean">
+Disable instrumentation collection (internal use).
+
+```bash
+export AFL_DISABLE_LLVM_INSTRUMENTATION=1
+```
+</ParamField>
+
+## afl-fuzz Settings
+
+These control `afl-fuzz` behavior at runtime.
+
+### Basic Options
+
+<ParamField path="AFL_AUTORESUME" type="boolean">
+Resume fuzzing from existing output directory even if different `-i` is provided.
+
+```bash
+export AFL_AUTORESUME=1
+afl-fuzz -i new_seeds -o existing_output -- ./target @@
+```
+</ParamField>
+
+<ParamField path="AFL_INPUT_PLACEHOLDER" type="string" default="@@">
+Use custom placeholder instead of `@@` for input file.
+
+```bash
+export AFL_INPUT_PLACEHOLDER=INPUT_FILE
+afl-fuzz -i in -o out -- ./target INPUT_FILE
+```
+</ParamField>
+
+<ParamField path="AFL_SKIP_CPUFREQ" type="boolean">
+Skip CPU frequency scaling check.
+
+```bash
+export AFL_SKIP_CPUFREQ=1
+```
+</ParamField>
+
+<ParamField path="AFL_NO_AFFINITY" type="boolean">
+Disable CPU core binding (allows running more instances than cores).
+
+```bash
+export AFL_NO_AFFINITY=1
+```
+</ParamField>
+
+<ParamField path="AFL_TRY_AFFINITY" type="boolean">
+Try CPU binding but don't fail if unavailable.
+
+```bash
+export AFL_TRY_AFFINITY=1
+```
+</ParamField>
+
+### Mutator Configuration
+
+<ParamField path="AFL_CUSTOM_MUTATOR_LIBRARY" type="path">
+Load custom mutator library (C/C++). Supports multiple (semicolon-separated).
+
+```bash
+export AFL_CUSTOM_MUTATOR_LIBRARY="/path/to/mutator1.so;/path/to/mutator2.so"
+```
+</ParamField>
+
+<ParamField path="AFL_PYTHON_MODULE" type="string">
+Python module name for custom mutator.
+
+```bash
+export PYTHONPATH=/path/to/dir
+export AFL_PYTHON_MODULE=my_mutator
+```
+</ParamField>
+
+<ParamField path="AFL_CUSTOM_MUTATOR_ONLY" type="boolean">
+Use only custom mutators, disable AFL++ mutations.
+
+```bash
+export AFL_CUSTOM_MUTATOR_ONLY=1
+```
+</ParamField>
+
+<ParamField path="AFL_CUSTOM_MUTATOR_LATE_SEND" type="boolean">
+Call `afl_custom_fuzz_send()` after target restart (for TCP services).
+
+```bash
+export AFL_CUSTOM_MUTATOR_LATE_SEND=1
+```
+</ParamField>
+
+<ParamField path="AFL_DISABLE_TRIM" type="boolean">
+Disable test case trimming (usually a bad idea).
+
+```bash
+export AFL_DISABLE_TRIM=1
+```
+</ParamField>
+
+<ParamField path="AFL_EXPAND_HAVOC_NOW" type="boolean">
+Start in extended havoc mode immediately (normally enabled automatically).
+
+```bash
+export AFL_EXPAND_HAVOC_NOW=1
+```
+</ParamField>
+
+<ParamField path="AFL_NO_ARITH" type="boolean">
+Skip deterministic arithmetics (useful for text formats).
+
+```bash
+export AFL_NO_ARITH=1
+```
+</ParamField>
+
+### Dictionary Options
+
+<ParamField path="AFL_NO_AUTODICT" type="boolean">
+Don't load LTO auto-generated dictionary.
+
+```bash
+export AFL_NO_AUTODICT=1
+```
+</ParamField>
+
+<ParamField path="AFL_MAX_DET_EXTRAS" type="integer" default="200">
+Threshold for probabilistic dictionary mode.
+
+```bash
+export AFL_MAX_DET_EXTRAS=300
+```
+</ParamField>
+
+### CMPLOG Options
+
+<ParamField path="AFL_CMPLOG_ONLY_NEW" type="boolean">
+Run CMPLOG only on new findings, not startup seeds.
+
+```bash
+export AFL_CMPLOG_ONLY_NEW=1
+```
+</ParamField>
+
+### Seed Handling
+
+<ParamField path="AFL_IGNORE_SEED_PROBLEMS" type="boolean">
+Skip crashing/timeout seeds instead of exiting.
+
+```bash
+export AFL_IGNORE_SEED_PROBLEMS=1
+```
+</ParamField>
+
+<ParamField path="AFL_EXIT_ON_SEED_ISSUES" type="boolean">
+Restore vanilla AFL behavior: exit on crash/timeout seeds.
+
+```bash
+export AFL_EXIT_ON_SEED_ISSUES=1
+```
+</ParamField>
+
+<ParamField path="AFL_CRASHING_SEEDS_AS_NEW_CRASH" type="boolean">
+Treat crashing seeds as new crashes (written to crashes folder).
+
+```bash
+export AFL_CRASHING_SEEDS_AS_NEW_CRASH=1
+```
+</ParamField>
+
+### Performance Tuning
+
+<ParamField path="AFL_FAST_CAL" type="boolean">
+Speed up calibration stage (~2.5x faster, less precise).
+
+```bash
+export AFL_FAST_CAL=1
+```
+</ParamField>
+
+<ParamField path="AFL_NO_STARTUP_CALIBRATION" type="boolean">
+Skip initial seed calibration, start fuzzing immediately.
+
+```bash
+export AFL_NO_STARTUP_CALIBRATION=1
+```
+
+<Warning>
+Use only if calibration takes too long for your CI/short fuzzing runs.
+</Warning>
+</ParamField>
+
+<ParamField path="AFL_TESTCACHE_SIZE" type="integer (MB)">
+Override `TESTCASE_CACHE` size. Recommended: 50-250MB.
+
+```bash
+export AFL_TESTCACHE_SIZE=100
+```
+</ParamField>
+
+<ParamField path="AFL_TMPDIR" type="path">
+Write `.cur_input` file to this directory (use ramdisk for speed).
+
+```bash
+export AFL_TMPDIR=/ramdisk
+```
+</ParamField>
+
+### Timeout/Memory
+
+<ParamField path="AFL_FORKSRV_INIT_TMOUT" type="integer (ms)">
+Timeout to wait for forkserver startup.
+
+```bash
+export AFL_FORKSRV_INIT_TMOUT=5000  # 5 seconds
+```
+</ParamField>
+
+<ParamField path="AFL_HANG_TMOUT" type="integer (ms)">
+Timeout for determining if input is a "hang".
+
+```bash
+export AFL_HANG_TMOUT=2000  # 2 seconds
+```
+</ParamField>
+
+<ParamField path="AFL_KILL_SIGNAL" type="integer" default="9">
+Signal to deliver to child on timeout (default: SIGKILL).
+
+```bash
+export AFL_KILL_SIGNAL=15  # SIGTERM
+```
+</ParamField>
+
+<ParamField path="AFL_FORK_SERVER_KILL_SIGNAL" type="integer" default="15">
+Signal to deliver to fork server on exit.
+
+```bash
+export AFL_FORK_SERVER_KILL_SIGNAL=15
+```
+</ParamField>
+
+<ParamField path="AFL_MAP_SIZE" type="integer">
+Set coverage map size (must match compiled target).
+
+```bash
+export AFL_MAP_SIZE=65536
+```
+</ParamField>
+
+<ParamField path="AFL_INPUT_LEN_MIN" type="integer">
+Minimum generated input length.
+
+```bash
+export AFL_INPUT_LEN_MIN=10
+```
+</ParamField>
+
+<ParamField path="AFL_INPUT_LEN_MAX" type="integer">
+Maximum generated input length.
+
+```bash
+export AFL_INPUT_LEN_MAX=1000
+```
+</ParamField>
+
+### Parallel Fuzzing
+
+<ParamField path="AFL_IMPORT_FIRST" type="boolean">
+Import test cases from other instances before doing anything else.
+
+```bash
+export AFL_IMPORT_FIRST=1
+```
+</ParamField>
+
+<ParamField path="AFL_FINAL_SYNC" type="boolean">
+Perform final import of test cases when terminating (for `-M` main fuzzer).
+
+```bash
+export AFL_FINAL_SYNC=1
+```
+</ParamField>
+
+<ParamField path="AFL_SYNC_TIME" type="integer (minutes)" default="20">
+Minimum time between fuzzing instance synchronization.
+
+```bash
+export AFL_SYNC_TIME=30
+```
+</ParamField>
+
+<ParamField path="AFL_NO_SYNC" type="boolean">
+Disable all syncing (overrides other sync options).
+
+```bash
+export AFL_NO_SYNC=1
+```
+</ParamField>
+
+### Exit Conditions
+
+<ParamField path="AFL_EXIT_ON_TIME" type="integer (seconds)">
+Terminate if no new paths found within specified time.
+
+```bash
+export AFL_EXIT_ON_TIME=3600  # 1 hour
+```
+</ParamField>
+
+<ParamField path="AFL_EXIT_WHEN_DONE" type="boolean">
+Terminate when all paths fuzzed and no finds for a while.
+
+```bash
+export AFL_EXIT_WHEN_DONE=1
+```
+</ParamField>
+
+### Crash Handling
+
+<ParamField path="AFL_CRASH_EXITCODE" type="integer">
+Treat specific exit code as crash.
+
+```bash
+export AFL_CRASH_EXITCODE=-1
+```
+</ParamField>
+
+<ParamField path="AFL_ALLOW_CORES" type="boolean">
+Allow writing core files on crashes.
+
+```bash
+export AFL_ALLOW_CORES=1
+```
+</ParamField>
+
+<ParamField path="AFL_NO_CRASH_README" type="boolean">
+Don't write README.txt to crashes directory.
+
+```bash
+export AFL_NO_CRASH_README=1
+```
+</ParamField>
+
+### Debugging
+
+<ParamField path="AFL_DEBUG_CHILD" type="boolean">
+Don't suppress child output (useful for debugging).
+
+```bash
+export AFL_DEBUG_CHILD=1
+```
+</ParamField>
+
+<ParamField path="AFL_NO_UI" type="boolean">
+Disable UI, print basic stats periodically.
+
+```bash
+export AFL_NO_UI=1
+```
+</ParamField>
+
+<ParamField path="AFL_FORCE_UI" type="boolean">
+Force UI even without valid terminal.
+
+```bash
+export AFL_FORCE_UI=1
+```
+</ParamField>
+
+<ParamField path="AFL_NO_COLOR" type="boolean">
+Disable colored console output.
+
+```bash
+export AFL_NO_COLOR=1
+```
+</ParamField>
+
+<ParamField path="AFL_PRINT_FILENAMES" type="boolean">
+Print each filename as it's processed (for afl-cmin, afl-showmap).
+
+```bash
+export AFL_PRINT_FILENAMES=1
+```
+</ParamField>
+
+### Advanced Options
+
+<ParamField path="AFL_PRELOAD" type="path">
+Set `LD_PRELOAD` for target without affecting afl-fuzz.
+
+```bash
+export AFL_PRELOAD=/path/to/libdislocator.so
+```
+</ParamField>
+
+<ParamField path="AFL_TARGET_ENV" type="string">
+Set environment variables for target binary.
+
+```bash
+export AFL_TARGET_ENV="VAR1=value1 VAR2='value 2'"
+```
+</ParamField>
+
+<ParamField path="AFL_NO_FORKSRV" type="boolean">
+Disable forkserver optimization (fork + execve for every test).
+
+```bash
+export AFL_NO_FORKSRV=1
+```
+</ParamField>
+
+<ParamField path="AFL_DEFER_FORKSRV" type="boolean">
+Enforce deferred forkserver even if not detected.
+
+```bash
+export AFL_DEFER_FORKSRV=1
+```
+</ParamField>
+
+<ParamField path="AFL_PERSISTENT" type="boolean">
+Enforce persistent mode even if not detected.
+
+```bash
+export AFL_PERSISTENT=1
+```
+</ParamField>
+
+<ParamField path="AFL_PERSISTENT_RECORD" type="integer">
+Record N previous inputs before crash in persistent mode.
+
+```bash
+export AFL_PERSISTENT_RECORD=10
+```
+
+<Note>
+Must be enabled in config.h first!
+</Note>
+</ParamField>
+
+<ParamField path="AFL_SHUFFLE_QUEUE" type="boolean">
+Randomly reorder input queue on startup.
+
+```bash
+export AFL_SHUFFLE_QUEUE=1
+```
+</ParamField>
+
+<ParamField path="AFL_SHA1_FILENAMES" type="boolean">
+Name files by SHA1 hash instead of `id:000000,...`.
+
+```bash
+export AFL_SHA1_FILENAMES=1
+```
+
+<Warning>
+Disables syncing with other AFL instances!
+</Warning>
+</ParamField>
+
+<ParamField path="AFL_CYCLE_SCHEDULES" type="boolean">
+Switch power schedule after each cycle.
+
+```bash
+export AFL_CYCLE_SCHEDULES=1
+```
+</ParamField>
+
+<ParamField path="AFL_KEEP_TIMEOUTS" type="boolean">
+Keep longer-running inputs if they reach new coverage.
+
+```bash
+export AFL_KEEP_TIMEOUTS=1
+```
+</ParamField>
+
+<ParamField path="AFL_IGNORE_TIMEOUTS" type="boolean">
+Ignore timeouts entirely for extra speed.
+
+```bash
+export AFL_IGNORE_TIMEOUTS=1
+```
+</ParamField>
+
+<ParamField path="AFL_DISABLE_REDUNDANT" type="boolean">
+Disable redundant queue items.
+
+```bash
+export AFL_DISABLE_REDUNDANT=1
+```
+</ParamField>
+
+### Frameshift
+
+<ParamField path="AFL_FRAMESHIFT_DISABLE" type="boolean">
+Disable frameshift analysis stage.
+
+```bash
+export AFL_FRAMESHIFT_DISABLE=1
+```
+</ParamField>
+
+<ParamField path="AFL_FRAMESHIFT_MAX_OVERHEAD" type="float" default="0.10">
+Maximum fraction of time frameshift can consume (0.0-1.0).
+
+```bash
+export AFL_FRAMESHIFT_MAX_OVERHEAD=0.15
+```
+</ParamField>
+
+### Statistics
+
+<ParamField path="AFL_STATSD" type="boolean">
+Enable StatsD metrics collection.
+
+```bash
+export AFL_STATSD=1
+export AFL_STATSD_HOST=127.0.0.1
+export AFL_STATSD_PORT=8125
+```
+</ParamField>
+
+<ParamField path="AFL_STATSD_HOST" type="string" default="127.0.0.1">
+StatsD server host.
+</ParamField>
+
+<ParamField path="AFL_STATSD_PORT" type="integer" default="8125">
+StatsD server port.
+</ParamField>
+
+<ParamField path="AFL_STATSD_TAGS_FLAVOR" type="enum">
+StatsD tags format: `dogstatsd`, `influxdb`, `librato`, `signalfx`.
+
+```bash
+export AFL_STATSD_TAGS_FLAVOR=dogstatsd
+```
+</ParamField>
+
+<ParamField path="AFL_FUZZER_STATS_UPDATE_INTERVAL" type="integer (seconds)">
+Interval to update fuzzer_stats file.
+
+```bash
+export AFL_FUZZER_STATS_UPDATE_INTERVAL=10
+```
+</ParamField>
+
+## QEMU Mode Settings
+
+<ParamField path="AFL_QEMU_CUSTOM_BIN" type="boolean">
+Skip prepending `afl-qemu-trace` (use custom QEMU).
+
+```bash
+export AFL_QEMU_CUSTOM_BIN=1
+```
+</ParamField>
+
+<ParamField path="AFL_ENTRYPOINT" type="hex address">
+Specify entry point into binary (must be basic block address).
+
+```bash
+export AFL_ENTRYPOINT=0x4004110
+```
+</ParamField>
+
+<ParamField path="AFL_INST_LIBS" type="boolean">
+Instrument dynamically linked libraries (including glibc).
+
+```bash
+export AFL_INST_LIBS=1
+```
+</ParamField>
+
+<ParamField path="AFL_QEMU_INST_RANGES" type="string">
+Instrument only specific memory ranges.
+
+```bash
+export AFL_QEMU_INST_RANGES=0x1000-0x2000,0x3000-0x4000
+```
+</ParamField>
+
+<ParamField path="AFL_QEMU_EXCLUDE_RANGES" type="string">
+Exclude specific memory ranges from instrumentation.
+
+```bash
+export AFL_QEMU_EXCLUDE_RANGES=0x5000-0x6000
+```
+</ParamField>
+
+<ParamField path="AFL_COMPCOV_LEVEL" type="integer (1-2)">
+CompareCoverage level for QEMU/libcompcov.
+- `1`: Only immediate values / read-only memory
+- `2`: All comparisons (more accurate, needs larger map)
+
+```bash
+export AFL_COMPCOV_LEVEL=2
+```
+</ParamField>
+
+<ParamField path="AFL_QEMU_PERSISTENT_ADDR" type="hex address">
+Address of persistent loop body function.
+
+```bash
+export AFL_QEMU_PERSISTENT_ADDR=0x400500
+```
+</ParamField>
+
+<ParamField path="AFL_QEMU_PERSISTENT_GPR" type="boolean">
+Save/restore general purpose registers in persistent mode.
+
+```bash
+export AFL_QEMU_PERSISTENT_GPR=1
+```
+</ParamField>
+
+## Third-Party Sanitizer Options
+
+AFL++ sets these to optimal values, but you can override:
+
+### ASAN Options
+
+```bash
+export ASAN_OPTIONS=abort_on_error=1:detect_leaks=0:malloc_context_size=0:symbolize=0:allocator_may_return_null=1
+```
+
+<Warning>
+Always include `abort_on_error=1` and `symbolize=0` for AFL++ to work correctly.
+</Warning>
+
+### MSAN Options
+
+```bash
+export MSAN_OPTIONS=exit_code=86:abort_on_error=1:symbolize=0:msan_track_origins=0:allocator_may_return_null=1
+```
+
+### LSAN Options
+
+```bash
+export LSAN_OPTIONS=exit_code=23:fast_unwind_on_malloc=0:symbolize=0:print_suppressions=0
+```
+
+## Quick Reference by Use Case
+
+<AccordionGroup>
+
+<Accordion title="Fast compilation for CI">
+```bash
+export AFL_QUIET=1
+export AFL_FAST_CAL=1
+export AFL_NO_UI=1
+```
+</Accordion>
+
+<Accordion title="Maximum speed fuzzing">
+```bash
+export AFL_TMPDIR=/ramdisk
+export AFL_TESTCACHE_SIZE=200
+export AFL_DISABLE_TRIM=1
+export AFL_SKIP_CPUFREQ=1
+```
+</Accordion>
+
+<Accordion title="Debug instrumentation issues">
+```bash
+export AFL_DEBUG=1
+export AFL_DEBUG_CHILD=1
+export AFL_NO_UI=1
+```
+</Accordion>
+
+<Accordion title="Parallel fuzzing campaign">
+```bash
+export AFL_FINAL_SYNC=1          # Main fuzzer
+export AFL_IMPORT_FIRST=1
+export AFL_TESTCACHE_SIZE=100
+export AFL_TMPDIR=/ramdisk
+```
+</Accordion>
+
+<Accordion title="Structure-aware fuzzing">
+```bash
+export AFL_LLVM_LAF_ALL=1        # Compile-time
+export AFL_LLVM_CMPLOG=1
+export AFL_CMPLOG_ONLY_NEW=1     # Runtime
+```
+</Accordion>
+
+</AccordionGroup>

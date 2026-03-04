@@ -1,122 +1,138 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "AFL++",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#040404",
+    "light": "#e4b744",
+    "dark": "#561743"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "/favicon.png",
+  "logo": {
+    "light": "https://media.brand.dev/a8c423ff-a5fb-48a3-bcb1-dcfafbeea139.png",
+    "dark": "https://media.brand.dev/af652655-a8fa-4beb-8ee0-22e13553ebfb.png"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/AFLplusplus/AFLplusplus"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/AFLplusplus/AFLplusplus"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "installation",
+              "quickstart"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/fuzzing-overview",
+              "concepts/instrumentation",
+              "concepts/coverage",
+              "concepts/mutations"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Fuzzing Guides",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "guides/source-code-fuzzing",
+              "guides/binary-only-fuzzing",
+              "guides/network-services",
+              "guides/gui-programs",
+              "guides/best-practices"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Instrumentation Modes",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "instrumentation/llvm-mode",
+              "instrumentation/lto-mode",
+              "instrumentation/gcc-plugin",
+              "instrumentation/persistent-mode",
+              "instrumentation/cmplog",
+              "instrumentation/laf-intel"
+            ]
+          },
+          {
+            "group": "Binary-Only Modes",
+            "pages": [
+              "binary-modes/qemu-mode",
+              "binary-modes/frida-mode",
+              "binary-modes/unicorn-mode",
+              "binary-modes/nyx-mode"
+            ]
+          },
+          {
+            "group": "Advanced Features",
+            "pages": [
+              "advanced/custom-mutators",
+              "advanced/power-schedules",
+              "advanced/dictionaries",
+              "advanced/environment-variables",
+              "advanced/parallel-fuzzing"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "Command Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Compiler Tools",
             "pages": [
-              "api-reference/introduction"
+              "commands/afl-cc",
+              "commands/afl-c++"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Fuzzing Tools",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "commands/afl-fuzz",
+              "commands/afl-showmap",
+              "commands/afl-tmin",
+              "commands/afl-cmin",
+              "commands/afl-analyze"
+            ]
+          },
+          {
+            "group": "Utility Tools",
+            "pages": [
+              "commands/afl-whatsup",
+              "commands/afl-plot",
+              "commands/afl-gotcpu",
+              "commands/afl-system-config"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Resources",
+        "groups": [
+          {
+            "group": "Additional Info",
+            "pages": [
+              "resources/faq",
+              "resources/tutorials",
+              "resources/third-party-tools",
+              "resources/changelog",
+              "resources/contributing"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

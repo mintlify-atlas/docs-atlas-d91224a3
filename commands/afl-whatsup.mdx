@@ -1,0 +1,374 @@
+---
+title: afl-whatsup
+description: Status monitoring tool for parallel fuzzing instances
+---
+
+The `afl-whatsup` script provides a summary of the status of multiple parallel AFL++ fuzzing instances running in distributed mode.
+
+## Synopsis
+
+```bash
+afl-whatsup [options] sync_directory
+```
+
+## Description
+
+`afl-whatsup` scans a sync directory containing multiple fuzzer instances (created with `-M`/`-S` flags) and displays aggregate statistics about their performance, findings, and health.
+
+## Required Parameters
+
+<ParamField path="sync_directory" type="path" required>
+  Directory containing synchronized fuzzer instances.
+  
+  ```bash
+  afl-whatsup sync/
+  ```
+</ParamField>
+
+## Options
+
+<ParamField path="-s" type="boolean">
+  Skip details and output summary results only.
+  
+  ```bash
+  afl-whatsup -s sync/
+  ```
+</ParamField>
+
+<ParamField path="-d" type="boolean">
+  Include dead (stopped) fuzzer stats in the output.
+  
+  ```bash
+  afl-whatsup -d sync/
+  ```
+</ParamField>
+
+<ParamField path="-m" type="boolean">
+  Show minimal stats only.
+  
+  ```bash
+  afl-whatsup -m sync/
+  ```
+</ParamField>
+
+<ParamField path="-n" type="boolean">
+  No color output.
+  
+  ```bash
+  afl-whatsup -n sync/
+  ```
+</ParamField>
+
+## Examples
+
+### Basic Status Check
+
+```bash
+# Check status of parallel fuzzers
+afl-whatsup sync/
+```
+
+### Output Example
+
+```
+afl-whatsup status check tool for afl-fuzz
+
+Individual fuzzers
+==================
+
+>>> fuzzer01 (0 days, 2 hrs) <<<
+
+  Last saved crash : 0 days, 0 hrs, 5 min, 23 sec
+  Last saved path  : 0 days, 0 hrs, 0 min, 12 sec
+  Pending paths    : 47 faves, 234 total
+  Cycles done      : 12
+  Corpus count     : 1,234
+  Unique crashes   : 5
+  Unique hangs     : 0
+  Exec speed       : 2,345 execs/sec
+
+>>> fuzzer02 (0 days, 2 hrs) <<<
+
+  Last saved crash : none
+  Last saved path  : 0 days, 0 hrs, 0 min, 8 sec  
+  Pending paths    : 32 faves, 189 total
+  Cycles done      : 11
+  Corpus count     : 1,189  
+  Unique crashes   : 0
+  Unique hangs     : 0
+  Exec speed       : 2,123 execs/sec
+
+>>> fuzzer03 (0 days, 2 hrs) <<<
+
+  Last saved crash : 0 days, 1 hrs, 12 min, 45 sec
+  Last saved path  : 0 days, 0 hrs, 1 min, 3 sec
+  Pending paths    : 28 faves, 156 total  
+  Cycles done      : 10
+  Corpus count     : 1,156
+  Unique crashes   : 2
+  Unique hangs     : 1
+  Exec speed       : 1,987 execs/sec
+
+Summary stats
+=============
+
+  Fuzzers alive         : 3
+  Total run time        : 0 days, 6 hours
+  Total execs           : 42.3 million
+  Cumulative speed      : 6,455 execs/sec
+  Pending paths         : 107 faves, 579 total
+  Pending per fuzzer    : 35 faves, 193 total (average)
+  Crashes found         : 7
+  Hangs found           : 1
+  Coverage gained       : 0 days, 0 hrs, 0 min, 8 sec ago
+  Crashes found         : 0 days, 0 hrs, 5 min, 23 sec ago
+```
+
+### Summary Only
+
+```bash
+afl-whatsup -s sync/
+```
+
+```
+Summary stats
+=============
+
+  Fuzzers alive         : 3
+  Total run time        : 0 days, 6 hours  
+  Total execs           : 42.3 million
+  Cumulative speed      : 6,455 execs/sec
+  Crashes found         : 7
+  Hangs found           : 1
+```
+
+### Include Dead Fuzzers
+
+```bash
+afl-whatsup -d sync/
+```
+
+```
+>>> fuzzer04 (DEAD - 1 days, 3 hrs) <<<
+
+  Last saved crash : 1 days, 2 hrs, 34 min, 12 sec
+  Last saved path  : 1 days, 2 hrs, 15 min, 8 sec
+  Pending paths    : 15 faves, 92 total
+  ...
+```
+
+## Use Cases
+
+### Monitoring Parallel Fuzzing
+
+```bash
+# Start multiple fuzzers
+afl-fuzz -M fuzzer01 -i seeds -o sync -- ./target @@ &
+afl-fuzz -S fuzzer02 -i seeds -o sync -- ./target @@ &
+afl-fuzz -S fuzzer03 -i seeds -o sync -- ./target @@ &
+
+# Check status periodically
+watch -n 60 'afl-whatsup -s sync'
+```
+
+### Automated Monitoring
+
+```bash
+#!/bin/bash
+# monitor.sh - Alert if fuzzing stops
+
+while true; do
+  alive=$(afl-whatsup -s sync/ | grep "Fuzzers alive" | awk '{print $4}')
+  
+  if [ "$alive" -lt 3 ]; then
+    echo "Warning: Only $alive fuzzers running!" | mail -s "Fuzzer Alert" admin@example.com
+  fi
+  
+  sleep 300  # Check every 5 minutes
+done
+```
+
+### Performance Analysis
+
+```bash
+# Log stats over time
+while true; do
+  date >> fuzzing_stats.log
+  afl-whatsup -s sync/ >> fuzzing_stats.log
+  echo "---" >> fuzzing_stats.log
+  sleep 3600  # Every hour
+done
+```
+
+### Finding Stuck Fuzzers
+
+```bash
+# Check which fuzzers haven't found paths recently
+afl-whatsup sync/ | grep -A 5 "Last saved path" | grep "hrs\|days"
+
+# These fuzzers might be stuck or exploring deep paths
+```
+
+## Output Fields Explained
+
+### Individual Fuzzer Stats
+
+- **Runtime** - How long this fuzzer has been running
+- **Last saved crash** - Time since last crash was found
+- **Last saved path** - Time since last interesting path was found
+- **Pending paths** - Queue items not yet fuzzed (faves + total)
+- **Cycles done** - Number of complete queue cycles
+- **Corpus count** - Total number of test cases in queue
+- **Unique crashes** - Number of unique crashing inputs found  
+- **Unique hangs** - Number of unique hanging inputs found
+- **Exec speed** - Executions per second
+
+### Summary Stats
+
+- **Fuzzers alive** - Number of currently running instances
+- **Total run time** - Aggregate runtime across all fuzzers
+- **Total execs** - Sum of all executions
+- **Cumulative speed** - Combined execution speed
+- **Pending paths** - Total across all fuzzers
+- **Coverage gained** - Time since any fuzzer found new coverage
+- **Crashes found** - Time since any fuzzer found a crash
+
+## Integration with Scripts
+
+### Parse Output
+
+```bash
+# Extract specific metrics
+CRASHES=$(afl-whatsup -s sync/ | grep "Crashes found" | awk '{print $4}')
+SPEED=$(afl-whatsup -s sync/ | grep "Cumulative speed" | awk '{print $4}')
+
+echo "Total crashes: $CRASHES"
+echo "Overall speed: $SPEED execs/sec"
+```
+
+### Dashboard Integration
+
+```bash
+# Export to JSON-like format for monitoring tools
+afl-whatsup -s sync/ | grep -E "(Fuzzers alive|Total execs|Cumulative speed|Crashes found|Hangs found)" > stats.txt
+
+# Process for Prometheus/Grafana/etc.
+python parse_stats.py stats.txt > metrics.json
+```
+
+## Comparison with fuzzer_stats
+
+```bash
+# Individual fuzzer stats file
+cat sync/fuzzer01/fuzzer_stats
+
+# vs. afl-whatsup - aggregates all fuzzers
+afl-whatsup sync/
+```
+
+## Directory Structure
+
+`afl-whatsup` expects this structure:
+
+```
+sync/
+├── fuzzer01/          # Main fuzzer (-M)
+│   ├── fuzzer_stats
+│   ├── queue/
+│   ├── crashes/
+│   └── ...
+├── fuzzer02/          # Secondary fuzzer (-S)
+│   ├── fuzzer_stats  
+│   ├── queue/
+│   └── ...
+└── fuzzer03/          # Secondary fuzzer (-S)
+    ├── fuzzer_stats
+    └── ...
+```
+
+## Tips
+
+### Regular Monitoring
+
+```bash
+# Add to crontab for daily reports
+0 9 * * * /path/to/afl-whatsup sync/ | mail -s "Daily Fuzzing Report" team@example.com
+```
+
+### Quick Health Check
+
+```bash
+# One-liner to check if all fuzzers are running
+[ $(afl-whatsup -s sync/ | grep "Fuzzers alive" | awk '{print $4}') -eq 4 ] && echo "OK" || echo "ALERT"
+```
+
+### Identifying Best Performers
+
+```bash
+# Find fuzzer with most crashes
+afl-whatsup sync/ | grep -B 5 "Unique crashes" | sort -t: -k2 -n | tail -1
+
+# Find fastest fuzzer  
+afl-whatsup sync/ | grep -B 10 "Exec speed" | sort -t: -k2 -n | tail -1
+```
+
+## Common Issues
+
+### "No fuzzers found"
+
+```bash
+# Wrong directory - should be sync dir, not individual fuzzer
+afl-whatsup sync/fuzzer01  # Wrong
+afl-whatsup sync/           # Correct
+```
+
+### "Permission denied"
+
+```bash
+# Need read access to fuzzer_stats files
+chmod -R +r sync/
+```
+
+## Automation Examples
+
+### Restart Dead Fuzzers
+
+```bash
+#!/bin/bash
+# restart_dead.sh
+
+for dir in sync/fuzzer*; do
+  name=$(basename "$dir")
+  
+  # Check if fuzzer is dead (no recent updates to fuzzer_stats)
+  if [ $(find "$dir/fuzzer_stats" -mmin +5 | wc -l) -gt 0 ]; then
+    echo "Restarting $name..."
+    
+    # Restart fuzzer
+    if [ "$name" = "fuzzer01" ]; then
+      afl-fuzz -M "$name" -i - -o sync -- ./target @@ &
+    else  
+      afl-fuzz -S "$name" -i - -o sync -- ./target @@ &
+    fi
+  fi
+done
+```
+
+### Collect Statistics
+
+```bash
+#!/bin/bash
+# collect_stats.sh - Log key metrics over time
+
+timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+stats=$(afl-whatsup -s sync/ | grep -E "(Total execs|Cumulative speed|Crashes found)")
+
+echo "$timestamp" >> fuzzing.log
+echo "$stats" >> fuzzing.log  
+echo "---" >> fuzzing.log
+```
+
+## See Also
+
+- [afl-fuzz](/commands/afl-fuzz) - Main fuzzing engine (see -M/-S options)
+- [afl-plot](/commands/afl-plot) - Plot fuzzing progress graphs

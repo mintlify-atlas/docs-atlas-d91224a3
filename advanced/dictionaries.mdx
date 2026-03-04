@@ -1,0 +1,513 @@
+---
+title: 'Fuzzing Dictionaries'
+description: 'Using and creating dictionaries to guide AFL++ mutations'
+icon: 'book'
+---
+
+Dictionaries provide AFL++ with syntax tokens and keywords for your target format, dramatically improving fuzzing efficiency for structured inputs.
+
+## What Are Dictionaries?
+
+Dictionaries are collections of interesting tokens, keywords, or byte sequences that are likely meaningful to your target. AFL++ uses these to:
+
+- Replace random bytes with known-good values
+- Insert format-specific keywords
+- Speed up discovery of paths requiring specific tokens
+- Bypass simple parsing checks
+
+<Tip>
+Dictionaries are most effective for formats with specific keywords, magic bytes, or structured syntax (XML, JSON, SQL, file formats, protocols).
+</Tip>
+
+## Using Dictionaries
+
+Pass a dictionary to `afl-fuzz` with the `-x` option:
+
+```bash
+afl-fuzz -i input -o output -x dictionaries/xml.dict -- ./target @@
+```
+
+### Built-in Dictionaries
+
+AFL++ includes dictionaries for common formats in the `dictionaries/` directory:
+
+<CardGroup cols={3}>
+
+<Card title="xml.dict" icon="code">
+XML tags and entities
+</Card>
+
+<Card title="json.dict" icon="brackets-curly">
+JSON syntax elements
+</Card>
+
+<Card title="png.dict" icon="image">
+PNG chunk types and values
+</Card>
+
+<Card title="sql.dict" icon="database">
+SQL keywords and operators
+</Card>
+
+<Card title="html.dict" icon="file-code">
+HTML tags and attributes
+</Card>
+
+<Card title="jpeg.dict" icon="file-image">
+JPEG markers and values
+</Card>
+
+</CardGroup>
+
+See [AFL++ dictionaries directory](https://github.com/AFLplusplus/AFLplusplus/tree/stable/dictionaries) for the complete list.
+
+## Dictionary Formats
+
+AFL++ supports two dictionary formats:
+
+### File Format (Recommended)
+
+A text file with one token per line:
+
+```text
+name="value"
+```
+
+- **name**: Optional alphanumeric identifier (for documentation)
+- **value**: Token in quotes with hex escaping for special characters
+
+<CodeGroup>
+
+```text XML Example
+tag_open="<"
+tag_close=">"
+entity_amp="&amp;"
+entity_lt="&lt;"
+entity_gt="&gt;"
+cdata_start="<![CDATA["
+cdata_end="]]>"
+xml_version="<?xml version=\"1.0\"?>"
+```
+
+```text JSON Example
+lbrace="{"
+rbrace="}"
+lbracket="["
+rbracket="]"
+colon=":"
+comma=","
+true="true"
+false="false"
+null="null"
+```
+
+```text Binary Format Example
+magic_png="\x89PNG\r\n\x1a\n"
+chunk_ihdr="IHDR"
+chunk_idat="IDAT"
+chunk_iend="IEND"
+chunk_plte="PLTE"
+```
+
+</CodeGroup>
+
+### Escape Sequences
+
+Use these escape sequences in values:
+
+- `\xNN`: Hex byte (e.g., `\x00` for null byte)
+- `\\`: Literal backslash
+- `\"`: Literal quote
+- `\r`, `\n`, `\t`: Carriage return, newline, tab
+
+### Directory Format
+
+Create a directory where each file contains one token:
+
+```bash
+mkdir my_dictionary/
+echo -n "<?xml" > my_dictionary/token1
+echo -n "<element>" > my_dictionary/token2
+echo -n "</element>" > my_dictionary/token3
+```
+
+<Note>
+No escaping needed - raw file contents are used as tokens.
+</Note>
+
+Use with:
+
+```bash
+afl-fuzz -i input -o output -x my_dictionary/ -- ./target @@
+```
+
+## Dictionary Levels
+
+Control which tokens are loaded based on complexity levels:
+
+```text
+basic_token="value"
+advanced_token@1="value"
+expert_token@2="value"
+```
+
+- **@0** (default): Always loaded
+- **@1**: Loaded if level ≥ 1
+- **@2**: Loaded if level ≥ 2
+
+Specify level when running:
+
+```bash
+afl-fuzz -i input -o output -x dictionary.dct@2 -- ./target @@
+```
+
+<Tip>
+Use levels to create graduated dictionaries: basic tokens at @0, rare/complex tokens at higher levels.
+</Tip>
+
+## Creating Custom Dictionaries
+
+### Manual Creation
+
+<Steps>
+
+<Step title="Identify important tokens">
+Analyze your target format for:
+- Magic bytes and headers
+- Keywords and commands
+- Common delimiters
+- Field separators
+- Control characters
+</Step>
+
+<Step title="Keep tokens small">
+Optimal token size: **2-16 bytes**
+
+```text
+# Good
+keyword="SELECT"
+delim=";"
+
+# Too large (will slow fuzzing)
+huge_structure="<?xml version=\"1.0\"?><root><element attr=\"value\">...</element></root>"
+```
+</Step>
+
+<Step title="Create the dictionary file">
+```text filename="myformat.dict"
+# Magic bytes
+magic="\x4d\x5a\x90\x00"
+
+# Keywords
+kw_start="START"
+kw_end="END"
+
+# Delimiters
+delim_colon=":"
+delim_semi=";"
+```
+</Step>
+
+</Steps>
+
+### Auto-generated Dictionaries
+
+AFL++ can automatically generate dictionaries:
+
+#### LTO Mode Auto-Dictionary
+
+With `afl-clang-lto`, dictionaries are automatically generated from compile-time comparisons:
+
+```bash
+# Compile with LTO
+CC=afl-clang-lto ./configure
+make
+
+# Dictionary is embedded - no -x flag needed!
+afl-fuzz -i input -o output -- ./target @@
+```
+
+<Note>
+This is **automatic** - just use afl-clang-lto and forget about dictionaries!
+</Note>
+
+#### LLVM Mode Dictionary Generation
+
+With `afl-clang-fast`, generate a dictionary file during compilation:
+
+```bash
+export AFL_LLVM_DICT2FILE=/path/to/output.dict
+export AFL_LLVM_DICT2FILE_NO_MAIN=1  # Skip main() parsing
+CC=afl-clang-fast ./configure
+make
+
+# Use generated dictionary
+afl-fuzz -i input -o output -x /path/to/output.dict -- ./target @@
+```
+
+<ParamField path="AFL_LLVM_DICT2FILE" type="path">
+Full path to dictionary file to create during compilation.
+</ParamField>
+
+<ParamField path="AFL_LLVM_DICT2FILE_NO_MAIN" type="boolean">
+Skip parsing `main()` function (often just command-line parsing).
+</ParamField>
+
+#### Runtime Token Capture
+
+Use `libtokencap` to capture tokens during execution:
+
+```bash
+export AFL_TOKEN_FILE=/path/to/captured.dict
+AFL_PRELOAD=/path/to/libtokencap.so ./target < sample_input
+
+# Use captured tokens
+afl-fuzz -i input -o output -x /path/to/captured.dict -- ./target @@
+```
+
+See [utils/libtokencap/README.md](https://github.com/AFLplusplus/AFLplusplus/tree/stable/utils/libtokencap) for details.
+
+## Dictionary Best Practices
+
+<AccordionGroup>
+
+<Accordion title="Token size matters">
+Keep tokens **2-16 bytes** for best results:
+
+```text
+# Optimal
+keyword="if"
+operator="=="
+delimiter=";"
+
+# Too small (1 byte - already covered by havoc)
+single="a"
+
+# Too large (slows fuzzing)
+large="this is a very long token that is probably too large"
+```
+</Accordion>
+
+<Accordion title="Quality over quantity">
+Fewer, high-quality tokens > many low-value tokens:
+
+```text
+# Good: 20-50 meaningful tokens
+keyword_select="SELECT"
+keyword_from="FROM"
+keyword_where="WHERE"
+
+# Bad: 500 random strings from corpus
+# (defeats the purpose)
+```
+</Accordion>
+
+<Accordion title="Format-specific tokens">
+Include tokens specific to your format:
+
+```text
+# PNG format
+magic="\x89PNG\r\n\x1a\n"
+chunk_ihdr="IHDR"
+chunk_idat="IDAT"
+
+# Not generic strings
+random_word="hello"
+```
+</Accordion>
+
+<Accordion title="Combine approaches">
+Use multiple dictionary sources:
+
+```bash
+# Auto-generated + manual
+export AFL_LLVM_DICT2FILE=auto.dict
+CC=afl-clang-fast ./configure && make
+
+# Merge with manual dictionary
+cat auto.dict manual.dict > combined.dict
+afl-fuzz -i input -o output -x combined.dict -- ./target @@
+```
+</Accordion>
+
+</AccordionGroup>
+
+## Probabilistic Dictionary Mode
+
+For large dictionaries, AFL++ uses probabilistic mode to avoid slowdowns:
+
+<ParamField path="AFL_MAX_DET_EXTRAS" type="integer" default="200">
+Threshold for probabilistic mode. When dictionary + auto-dictionary entries exceed this, not all entries are used all the time.
+</ParamField>
+
+```bash
+export AFL_MAX_DET_EXTRAS=300
+afl-fuzz -i input -o output -x large.dict -- ./target @@
+```
+
+<Note>
+With 201+ entries, there's a 1/201 chance that one entry won't be used directly in a given mutation.
+</Note>
+
+## Dictionary Recommendations by Format
+
+<CardGroup cols={2}>
+
+<Card title="XML/HTML" icon="code">
+```text
+tag_open="<"
+tag_close=">"
+slash="/"
+equal="="
+quote="\""
+entity_amp="&amp;"
+entity_lt="&lt;"
+```
+</Card>
+
+<Card title="JSON" icon="brackets-curly">
+```text
+lbrace="{"
+rbrace="}"
+lbracket="["
+rbracket="]"
+colon=":"
+comma=","
+true="true"
+false="false"
+null="null"
+```
+</Card>
+
+<Card title="Binary Formats" icon="file-binary">
+```text
+magic="\x4d\x5a"  # MZ
+pe_sig="PE\x00\x00"
+elf_magic="\x7fELF"
+png_magic="\x89PNG"
+```
+</Card>
+
+<Card title="Network Protocols" icon="network-wired">
+```text
+http_get="GET"
+http_post="POST"
+http_version="HTTP/1.1"
+crlf="\r\n"
+header_host="Host:"
+```
+</Card>
+
+</CardGroup>
+
+## Disabling Auto-Dictionaries
+
+If you want to use only your manual dictionary:
+
+```bash
+export AFL_NO_AUTODICT=1
+afl-fuzz -i input -o output -x manual.dict -- ./target @@
+```
+
+<ParamField path="AFL_NO_AUTODICT" type="boolean">
+Disable loading of LTO-generated auto-dictionaries compiled into the target.
+</ParamField>
+
+## Examples
+
+### Example 1: SQL Fuzzer
+
+```text filename="sql.dict"
+# SQL Keywords
+select="SELECT"
+from="FROM"
+where="WHERE"
+insert="INSERT"
+into="INTO"
+values="VALUES"
+update="UPDATE"
+delete="DELETE"
+
+# Operators
+eq="="
+lt="<"
+gt=">"
+and="AND"
+or="OR"
+
+# Syntax
+semi=";"
+comma=","
+star="*"
+lparen="("
+rparen=")"
+quote="'"
+```
+
+### Example 2: Image Format
+
+```text filename="png.dict"
+# PNG Magic
+magic="\x89PNG\r\n\x1a\n"
+
+# Chunk Types
+ihdr="IHDR"
+plte="PLTE"
+idat="IDAT"
+iend="IEND"
+text="tEXt"
+time="tIME"
+
+# Common Sizes
+width_800="\x00\x00\x03\x20"
+height_600="\x00\x00\x02\x58"
+```
+
+### Example 3: Protocol Fuzzer
+
+```text filename="http.dict"
+# Methods
+get="GET"
+post="POST"
+head="HEAD"
+put="PUT"
+delete="DELETE"
+
+# Versions
+http10="HTTP/1.0"
+http11="HTTP/1.1"
+http2="HTTP/2"
+
+# Headers
+host="Host:"
+user_agent="User-Agent:"
+content_type="Content-Type:"
+content_length="Content-Length:"
+
+# Delimiters
+crlf="\r\n"
+space=" "
+colon=":"
+```
+
+## Related Topics
+
+<CardGroup cols={2}>
+
+<Card title="Custom Mutators" icon="puzzle-piece" href="/advanced/custom-mutators">
+Implement structure-aware mutations
+</Card>
+
+<Card title="CMPLOG" icon="magnifying-glass" href="/instrumentation/cmplog">
+Automatic comparison discovery
+</Card>
+
+<Card title="LAF-Intel" icon="scissors" href="/instrumentation/laf-intel">
+Split comparisons for easier solving
+</Card>
+
+<Card title="LTO Mode" icon="link" href="/instrumentation/lto-mode">
+Automatic dictionary generation
+</Card>
+
+</CardGroup>

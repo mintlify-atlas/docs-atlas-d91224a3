@@ -1,0 +1,90 @@
+---
+title: Contributing to AFL++
+description: Guidelines for contributing code and documentation to AFL++
+---
+
+## Submitting Pull Requests
+
+All contributions (pull requests) must be made against the `dev` branch.
+
+### Code Formatting
+
+Each modified source file, before merging, must be formatted:
+
+```bash
+make code-format
+```
+
+This works for files already present in the project. If you added a file in a new directory:
+
+```bash
+./.custom-format.py -i file-that-you-have-created.c
+```
+
+### Coding Style
+
+Please follow the AFL style:
+
+- **No camel case at all**
+- Use AFL's macros wherever possible (e.g., `WARNF`, `FATAL`, `MAP_SIZE`, etc.)
+- Keep code readable and well-commented
+
+### Cross-Platform Compatibility
+
+Remember that AFL++ has to build and run on many platforms:
+
+- Generalize your Makefiles/GNUmakefile
+- Make patches to pre-existing Makefiles as generic as possible
+- Test on multiple platforms when possible
+
+## Contributing to Documentation
+
+We welcome contributions to our docs!
+
+### Documentation Structure
+
+Before creating a new file, check if your content matches an existing file in:
+
+- `docs/` (most documentation content)
+- `frida_mode/`
+- `instrumentation/`
+- `nyx_mode/`
+- `qemu_mode/`
+- `unicorn_mode/`
+
+### Documentation Guidelines
+
+**File Naming**
+- ✅ Use Markdown files: `fuzzing_gui_program.md`
+- ❌ Don't use other formats: `fuzzing_gui_program.txt`
+- ✅ Use underscores: `fuzzing_network_service.md`
+- ❌ Don't use hyphens: `fuzzing-network-service.md`
+
+**Formatting**
+- Use a maximum of 80 characters per line (easier to read in console)
+- Make all pull requests against `dev` branch
+
+**Writing Best Practices**
+- Use clear and simple language
+- Structure content with headings and paragraphs
+- Use bulleted lists for similar content (easy to scan)
+- Use numbered lists for procedures or prioritizing
+- Link to related content (prerequisites, in-depth discussions)
+
+## Getting Help
+
+If you have questions about contributing:
+
+- Check existing [GitHub Discussions](https://github.com/AFLplusplus/AFLplusplus/discussions)
+- Review existing pull requests for examples
+- Ask in the AFL++ community channels
+
+## Code of Conduct
+
+Be respectful and constructive in all interactions with the AFL++ community.
+
+---
+
+<Note>
+Thank you for contributing to AFL++! Your contributions help make fuzzing more accessible and effective for everyone.
+</Note>

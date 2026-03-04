@@ -1,0 +1,372 @@
+---
+title: afl-cmin
+description: Corpus minimization tool that reduces test case sets while preserving coverage
+---
+
+The `afl-cmin` script minimizes a test corpus by removing redundant test cases that don't add new coverage. This speeds up fuzzing by reducing the queue size.
+
+## Synopsis
+
+```bash
+afl-cmin -i input_dir -o output_dir [options] -- /path/to/target [target_args]
+```
+
+## Description
+
+`afl-cmin` analyzes a set of test cases and removes those that don't contribute unique coverage. It uses [afl-showmap](/commands/afl-showmap) internally to measure edge coverage for each input.
+
+The result is a smaller corpus that covers the same code paths, which:
+- Reduces fuzzing overhead
+- Speeds up initial calibration
+- Makes corpus management easier
+
+## Required Parameters
+
+<ParamField path="-i" type="path" required>
+  Input directory containing test cases to minimize.
+  
+  ```bash
+  afl-cmin -i corpus/ -o minimized/ -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-o" type="path" required>
+  Output directory for minimized corpus.
+  
+  ```bash
+  afl-cmin -i fuzzer_queue/ -o seeds/ -- ./target @@
+  ```
+</ParamField>
+
+## Execution Control
+
+<ParamField path="-t" type="number">
+  Timeout for each run in milliseconds (default: 1000ms).
+  
+  ```bash
+  afl-cmin -i corpus/ -o min/ -t 5000 -- ./slow_target @@
+  ```
+</ParamField>
+
+<ParamField path="-m" type="number">
+  Memory limit for child process in megabytes.
+  
+  ```bash
+  afl-cmin -i corpus/ -o min/ -m 512 -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-Q" type="boolean">
+  Use QEMU mode for binary-only targets.
+  
+  ```bash
+  afl-cmin -i corpus/ -o min/ -Q -- ./binary_target @@
+  ```
+</ParamField>
+
+<ParamField path="-O" type="boolean">
+  Use FRIDA mode for binary-only instrumentation.
+</ParamField>
+
+<ParamField path="-U" type="boolean">
+  Use Unicorn mode.
+</ParamField>
+
+## Additional Options
+
+<ParamField path="-e" type="boolean">
+  Solve for edge coverage only (ignore hit counts).
+  
+  ```bash
+  afl-cmin -i corpus/ -o min/ -e -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="-f" type="path">
+  Input file read by the tested program.
+  
+  ```bash
+  afl-cmin -i corpus/ -o min/ -f /tmp/input -- ./target /tmp/input
+  ```
+</ParamField>
+
+## Examples
+
+### Basic Corpus Minimization
+
+```bash
+# Before minimization
+ls -1 corpus/ | wc -l
+1523
+
+# Minimize
+afl-cmin -i corpus/ -o corpus_min/ -- ./target @@
+
+# After minimization  
+ls -1 corpus_min/ | wc -l
+247
+
+# Same coverage with 84% fewer files!
+```
+
+### Output Example
+
+```
+corpus minimization tool for afl-fuzz
+
+[*] Testing the target binary...
+[+] OK, 1523 test cases found.
+[*] Obtaining traces for input files in 'corpus/'.
+[*] Processing file 0001/1523...
+[*] Processing file 0100/1523...
+...
+[*] Sorting trace sets (this may take a while)...
+[+] Found 247 unique tuples across 1523 files.
+[*] Copying files to output directory...
+
+[+] Narrowed down to 247 files, saved in 'corpus_min/'.
+```
+
+### Minimize Fuzzer Queue
+
+```bash
+# After fuzzing, minimize the queue
+afl-cmin -i out/queue/ -o seeds_minimized/ -- ./target @@
+
+# Use minimized set for next fuzzing campaign
+afl-fuzz -i seeds_minimized/ -o out2/ -- ./target @@
+```
+
+### Combine Multiple Fuzzer Queues
+
+```bash
+# Merge queues from parallel fuzzers
+mkdir combined/
+cp fuzzer1/queue/* combined/
+cp fuzzer2/queue/* combined/
+cp fuzzer3/queue/* combined/
+
+# Minimize combined corpus
+afl-cmin -i combined/ -o merged_minimal/ -- ./target @@
+```
+
+### Binary-Only Target
+
+```bash
+# Minimize corpus for uninstrumented binary
+afl-cmin -Q -i corpus/ -o corpus_min/ -- ./closed_source @@
+```
+
+### With Timeout
+
+```bash
+# Set higher timeout for slow inputs
+afl-cmin -i corpus/ -o corpus_min/ -t 10000 -- ./slow_target @@
+```
+
+## How It Works
+
+1. **Extract coverage** - Run each input through afl-showmap to get edge coverage
+2. **Build coverage map** - Track which inputs cover which edges
+3. **Select minimal set** - Choose smallest set of inputs that cover all edges
+4. **Copy results** - Copy selected inputs to output directory
+
+The algorithm is greedy:
+- Inputs covering more unique edges are preferred
+- Smaller files are preferred when coverage is equal
+- Process continues until all edges are covered
+
+## Use Cases
+
+### Seed Corpus Preparation
+
+```bash
+# Download large corpus from internet
+wget https://example.com/corpus.tar.gz
+tar xzf corpus.tar.gz
+
+# Minimize before fuzzing
+afl-cmin -i corpus/ -o seeds/ -- ./target @@
+
+# Start fuzzing with minimal set
+afl-fuzz -i seeds/ -o out/ -- ./target @@
+```
+
+### Periodic Maintenance
+
+```bash
+# Every week, minimize the growing queue
+afl-cmin -i out/queue/ -o queue_minimized/ -- ./target @@
+
+# Replace queue with minimized version
+rm -rf out/queue
+mv queue_minimized out/queue
+
+# Continue fuzzing
+afl-fuzz -i - -o out/ -- ./target @@
+```
+
+### Corpus Sharing
+
+```bash
+# Minimize before sharing corpus publicly
+afl-cmin -i private_corpus/ -o public_corpus/ -- ./target @@
+tar czf corpus.tar.gz public_corpus/
+
+# Smaller, cleaner corpus for others to use
+```
+
+### Cross-Project Corpus
+
+```bash
+# Combine corpora from similar targets
+cat project1/corpus/* project2/corpus/* > combined/
+
+# Minimize combined set
+afl-cmin -i combined/ -o universal_corpus/ -- ./target @@
+```
+
+## Performance Tips
+
+### Parallel Processing
+
+For very large corpora, use multiple cores:
+
+```bash
+# afl-cmin automatically uses multiple cores if available
+# Ensure cores are not bound (unset AFL_NO_AFFINITY if set)
+
+afl-cmin -i huge_corpus/ -o minimized/ -- ./target @@
+```
+
+### Memory Optimization
+
+For memory-intensive targets:
+
+```bash
+# Set memory limit
+afl-cmin -i corpus/ -o min/ -m 1024 -- ./target @@
+```
+
+### Skip Timeouts
+
+Crashing and timing out inputs are handled:
+
+```bash
+# afl-cmin will skip inputs that crash or timeout
+# Check for .AFL_CMIN_ERRORS file in output directory
+```
+
+## Differences from afl-tmin
+
+| Tool | Purpose | Input | Output |
+|------|---------|-------|--------|
+| **afl-cmin** | Minimize corpus | Directory of files | Smaller directory |
+| **afl-tmin** | Minimize single file | One file | Shorter file |
+
+```bash
+# afl-cmin: reduce number of files
+afl-cmin -i 1000_files/ -o 50_files/ -- ./target @@
+
+# afl-tmin: reduce size of one file  
+afl-tmin -i 10KB_file -o 47B_file -- ./target @@
+```
+
+## Environment Variables
+
+<ParamField path="AFL_ALLOW_TMP" type="boolean">
+  Allow running in /tmp directory (security risk on multi-user systems).
+  
+  ```bash
+  AFL_ALLOW_TMP=1 afl-cmin -i /tmp/corpus -o /tmp/min -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="AFL_KEEP_TRACES" type="boolean">
+  Keep trace files and metadata after minimization (in `<out_dir>/.traces/`).
+  
+  ```bash
+  AFL_KEEP_TRACES=1 afl-cmin -i corpus/ -o min/ -- ./target @@
+  ls min/.traces/
+  ```
+</ParamField>
+
+<ParamField path="AFL_PATH" type="path">
+  Location of afl-showmap binary.
+  
+  ```bash
+  AFL_PATH=/custom/afl afl-cmin -i corpus/ -o min/ -- ./target @@
+  ```
+</ParamField>
+
+<ParamField path="AFL_PRINT_FILENAMES" type="boolean">
+  Print each filename as it's processed.
+  
+  ```bash
+  AFL_PRINT_FILENAMES=1 afl-cmin -i corpus/ -o min/ -- ./target @@
+  ```
+</ParamField>
+
+## Troubleshooting
+
+### All Files Kept
+
+```bash
+# If minimization doesn't reduce corpus:
+# 1. Check that target is instrumented
+./target < /dev/null  # Should show AFL++ banner
+
+# 2. Verify files produce different coverage
+afl-showmap -o trace1.txt -- ./target file1
+afl-showmap -o trace2.txt -- ./target file2  
+diff trace1.txt trace2.txt  # Should show differences
+```
+
+### Crashes During Minimization
+
+```bash
+# Check .AFL_CMIN_ERRORS file
+cat output_dir/.AFL_CMIN_ERRORS
+
+# May contain files that crashed or timed out
+```
+
+### Slow Performance
+
+```bash
+# Increase timeout for slow targets
+afl-cmin -t 10000 -i corpus/ -o min/ -- ./slow_target @@
+
+# Or skip edge hit counts
+afl-cmin -e -i corpus/ -o min/ -- ./target @@
+```
+
+## Best Practices
+
+1. **Minimize regularly** - Run after major fuzzing campaigns
+2. **Keep originals** - Always preserve original corpus
+3. **Verify coverage** - Check that minimized corpus has similar coverage
+4. **Combine with tmin** - Optionally minimize individual files after cmin
+
+```bash
+# Complete minimization workflow
+# 1. Minimize corpus
+afl-cmin -i queue/ -o queue_min/ -- ./target @@
+
+# 2. Optionally minimize each file
+for f in queue_min/*; do
+  afl-tmin -i "$f" -o "${f}.tmin" -- ./target @@
+  mv "${f}.tmin" "$f"
+done
+
+# 3. Verify coverage is preserved
+afl-showmap -C -i queue/ -o cov_before.txt -- ./target @@
+afl-showmap -C -i queue_min/ -o cov_after.txt -- ./target @@
+diff cov_before.txt cov_after.txt
+```
+
+## See Also
+
+- [afl-fuzz](/commands/afl-fuzz) - Main fuzzing engine
+- [afl-tmin](/commands/afl-tmin) - Test case minimizer
+- [afl-showmap](/commands/afl-showmap) - Coverage analysis (used internally)

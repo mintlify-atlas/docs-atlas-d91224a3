@@ -1,0 +1,348 @@
+---
+title: "Instrumentation"
+description: "How AFL++ instruments programs to track code coverage and execution paths"
+---
+
+## What is Instrumentation?
+
+Instrumentation is the process of adding code to a program that allows AFL++ to monitor its execution and track which code paths are taken. This feedback is essential for coverage-guided fuzzing.
+
+When you compile a program with AFL++, the compiler inserts small pieces of tracking code at strategic points (typically at the beginning of each basic block or edge). During execution, this instrumented code updates a shared memory region that AFL++ reads to understand what code was executed.
+
+<Info>
+Proper instrumentation is critical for fuzzing effectiveness. Poor instrumentation can lead to missed paths, while good instrumentation enables AFL++ to efficiently explore the target's behavior.
+</Info>
+
+## Choosing an Instrumentation Mode
+
+AFL++ offers several instrumentation modes, each with different tradeoffs. Use this decision flow:
+
+```
+┌─────────────────────────────────┐
+│ LLVM/Clang 11+ available?       │  → Use LTO mode (afl-clang-lto)
+└─────────────────────────────────┘    Best performance + collision-free coverage
+              │
+              ├─ If LTO fails
+              ↓
+┌─────────────────────────────────┐
+│ LLVM/Clang 3.8+ available?      │  → Use LLVM mode (afl-clang-fast)
+└─────────────────────────────────┘    Fast and widely compatible
+              │
+              ├─ If LLVM fails
+              ↓
+┌─────────────────────────────────┐
+│ GCC 5+ with plugin support?     │  → Use GCC plugin mode (afl-gcc-fast)
+└─────────────────────────────────┘    Alternative to LLVM
+              │
+              ↓
+       Install LLVM or GCC dev packages!
+```
+
+<Tip>
+For best results, use **LTO mode** (afl-clang-lto) with LLVM 11 or newer. It provides collision-free coverage and 10-25% better performance than other modes.
+</Tip>
+
+## LTO Mode (afl-clang-lto)
+
+**Link-Time Optimization (LTO) mode** is the recommended instrumentation method. It instruments at link time when all compilation units are available, enabling optimal coverage tracking.
+
+### Why LTO Mode?
+
+Vanilla AFL and basic instrumentation modes assign random IDs to basic blocks during compilation. With thousands of instrumented locations, this causes **edge collisions** in the coverage map:
+
+- At 256 instrumented blocks: ~1 collision (on average)
+- At 10,000 blocks: ~750 collisions
+- At 50,000 blocks: ~18,000 collisions!
+
+<Warning>
+Edge collisions cause AFL++ to miss new paths, significantly degrading fuzzing efficiency. This problem is **underestimated in the fuzzing community**.
+</Warning>
+
+### LTO Advantages
+
+✓ **Collision-free coverage**: Guaranteed unique edge IDs
+✓ **Better performance**: 10-25% speed gain vs LLVM mode
+✓ **Auto-dictionary**: Automatically extracts comparison values during compilation
+✓ **Compatible with other features**: Works with CMPLOG, LAF-intel, and instrumentation lists
+
+### LTO Requirements
+
+- LLVM 12 or newer (LLVM 18+ recommended)
+- Must set `AR=llvm-ar` and `RANLIB=llvm-ranlib`
+- Some targets may need `AS=llvm-as` or `LD=afl-clang-lto`
+
+### Building with LTO
+
+```bash
+# Set environment variables
+export CC=afl-clang-lto
+export CXX=afl-clang-lto++
+export AR=llvm-ar
+export RANLIB=llvm-ranlib
+
+# Configure and build
+./configure --disable-shared
+make
+```
+
+<Note>
+LTO compilation can be significantly slower than other modes, especially for large projects. The runtime performance gain is worth the extra build time.
+</Note>
+
+### LTO Output Example
+
+```
+afl-llvm-lto++2.63d by Marc "vanHauser" Heuse <mh@mh-sec.de>
+AUTODICTIONARY: 11 strings found
+[+] Instrumented 12071 locations with no collisions (on average 1046 
+    collisions would be in afl-clang-fast CLASSIC) (non-hardened mode).
+```
+
+## LLVM Mode (afl-clang-fast)
+
+**LLVM mode** provides compiler-level instrumentation using LLVM's infrastructure. It's the most compatible mode and works with LLVM 3.8 through 21 (though 18+ is recommended).
+
+### LLVM Mode Advantages
+
+✓ **Compiler optimizations**: 2x faster than obsolete assembly-based instrumentation
+✓ **CPU independent**: Works on non-x86 architectures
+✓ **Better thread support**: Handles multi-threaded targets more gracefully
+✓ **Wide compatibility**: Works with most LLVM-compatible code
+✓ **PCGUARD mode**: Provides collision-free coverage (LLVM 9+)
+
+### Building with LLVM Mode
+
+```bash
+export LLVM_CONFIG=llvm-config-18  # or your LLVM version
+make
+```
+
+Then compile targets with:
+
+```bash
+CC=afl-clang-fast CXX=afl-clang-fast++ ./configure --disable-shared
+make
+```
+
+### LLVM Instrumentation Variants
+
+You can select different instrumentation strategies:
+
+**PCGUARD (default, LLVM 9+)**:
+- Collision-free coverage
+- Best performance
+- Recommended for most targets
+
+**Classic AFL instrumentation**:
+```bash
+export AFL_LLVM_INSTRUMENT=AFL  # Use vanilla AFL-style coverage
+```
+
+**Context-sensitive coverage**:
+```bash
+export AFL_LLVM_INSTRUMENT=CTX  # Include caller context in coverage
+```
+
+**N-gram coverage**:
+```bash
+export AFL_LLVM_INSTRUMENT=NGRAM-4  # Track sequences of 4 edges
+```
+
+<Tip>
+Context-sensitive and N-gram coverage modes require larger maps (set `MAP_SIZE_POW2=18` or higher in config.h) but can improve coverage for complex targets.
+</Tip>
+
+## GCC Plugin Mode (afl-gcc-fast)
+
+For systems without LLVM, AFL++ provides a **GCC plugin** that offers similar functionality to LLVM mode.
+
+### Requirements
+
+- GCC 5 or newer
+- GCC plugin development headers (`gcc-VERSION-plugin-dev`)
+
+### Building with GCC Plugin
+
+```bash
+CC=afl-gcc-fast CXX=afl-g++-fast ./configure --disable-shared
+make
+```
+
+<Note>
+GCC plugin mode is less efficient than LLVM modes and lacks some advanced features. Use LLVM when possible.
+</Note>
+
+## Using afl-cc (Unified Compiler)
+
+All AFL++ compilers are symlinks to `afl-cc`, which automatically detects the mode from the binary name. You can also explicitly set the mode:
+
+```bash
+# Using symlinks
+afl-clang-lto
+afl-clang-fast
+afl-gcc-fast
+
+# Or use environment variable
+export AFL_CC_COMPILER=LTO
+afl-cc target.c
+
+# Or use command-line flag
+CFLAGS="--afl-lto" afl-cc target.c
+```
+
+## Advanced Instrumentation Options
+
+### LAF-Intel / COMPCOV
+
+Splits complex comparisons (integers, strings, floats, switches) into byte-level comparisons, making them easier for AFL++ to solve:
+
+```bash
+export AFL_LLVM_LAF_ALL=1
+afl-clang-fast target.c
+```
+
+<Info>
+LAF-Intel is particularly helpful when you don't have a large, high-quality corpus. It helps AFL++ bypass difficult comparison checks.
+</Info>
+
+### CMPLOG (Redqueen)
+
+Instruments the target to send comparison values to AFL++, which tries to insert these values into the fuzzing data:
+
+```bash
+# Build a CMPLOG binary
+AFL_LLVM_CMPLOG=1 afl-clang-fast target.c -o target.cmplog
+
+# Build normal binary
+afl-clang-fast target.c -o target
+
+# Run with CMPLOG
+afl-fuzz -i seeds -o out -c target.cmplog -- ./target @@
+```
+
+<Tip>
+CMPLOG is often more effective than LAF-Intel, especially when the target doesn't transform input data before comparison. For best results, use a separate CMPLOG binary to avoid the ~20% performance penalty.
+</Tip>
+
+### Selective Instrumentation
+
+Instrument only specific parts of the code to reduce overhead and focus fuzzing:
+
+**Allow-list (instrument only these files/functions)**:
+
+```bash
+# Create allowlist.txt
+echo "parser.c" > allowlist.txt
+echo "fun: parse_header" >> allowlist.txt
+
+export AFL_LLVM_ALLOWLIST=allowlist.txt
+afl-clang-fast target.c
+```
+
+**Deny-list (skip these files/functions)**:
+
+```bash
+# Create denylist.txt
+echo "logging.c" > denylist.txt
+echo "fun: debug_print" >> denylist.txt
+
+export AFL_LLVM_DENYLIST=denylist.txt
+afl-clang-fast target.c
+```
+
+<Warning>
+During optimization, functions may be inlined and won't match the list. Consider disabling inlining for critical functions you want to filter.
+</Warning>
+
+### Thread-Safe Instrumentation
+
+For multi-threaded targets, enable thread-safe counters:
+
+```bash
+export AFL_LLVM_THREADSAFE_INST=1
+afl-clang-fast target.c
+```
+
+Note: This disables NeverZero counters and adds slight overhead for better precision.
+
+## Instrumentation Best Practices
+
+### Compile Statically
+
+**Always compile targets statically** when possible:
+
+```bash
+./configure --disable-shared
+```
+
+<Warning>
+Instrumenting shared libraries is complex and error-prone. It requires manual ID management and can cause runtime issues. Always prefer static linking.
+</Warning>
+
+### Disable Symbol Hiding
+
+If using linker scripts that hide symbols, you may see:
+
+```
+undefined symbol: __afl_area_ptr
+```
+
+Fix by adding to the linker script:
+
+```
+{
+  global:
+    __afl_*;
+}
+```
+
+### Handle Build System Quirks
+
+Some build systems need special handling:
+
+```bash
+# If configure complains about stderr output
+export AFL_QUIET=1
+
+# If configure thinks AFL++ compiler doesn't work
+export AFL_NOOPT=1  # Only for configure step!
+
+# If warnings cause errors
+./configure --disable-werror
+```
+
+### Optimize for Fuzzing
+
+Remove unnecessary checks during fuzzing:
+
+```c
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+  // Skip checksum verification
+  return 0;
+#endif
+```
+
+All AFL++ compilers define this macro automatically.
+
+## Verifying Instrumentation
+
+Check if your binary is properly instrumented:
+
+```bash
+# Check coverage map size
+afl-showmap -o /dev/null -- ./target input.txt
+
+# Count instrumented locations
+afl-showmap -C -i corpus -o /dev/null -- ./target @@
+```
+
+<Info>
+Expect thousands of instrumented edges for most real-world programs. Very low counts (&lt;200) suggest incomplete instrumentation or early bailout.
+</Info>
+
+## Next Steps
+
+- Learn about [coverage tracking](/concepts/coverage) to understand how instrumentation data is used
+- Explore [mutation strategies](/concepts/mutations) that leverage coverage feedback
+- Read the [LLVM instrumentation details](/instrumentation/llvm-mode)
+- Check out [LTO mode documentation](/instrumentation/lto-mode)

@@ -1,0 +1,335 @@
+---
+title: afl-plot
+description: Generate visual plots of fuzzing progress over time
+---
+
+The `afl-plot` script generates gnuplot-based graphs showing fuzzing progress, coverage growth, and other metrics over time.
+
+## Synopsis
+
+```bash
+afl-plot [-g|--graphical] afl_state_dir graph_output_dir
+```
+
+## Description
+
+`afl-plot` reads the `plot_data` file from an AFL++ output directory and creates PNG graphs showing fuzzing metrics over time. The plots are generated as web-viewable HTML with embedded images.
+
+## Required Parameters
+
+<ParamField path="afl_state_dir" type="path" required>
+  AFL++ state directory (fuzzer output directory containing `plot_data`).
+  
+  ```bash
+  afl-plot out/fuzzer01 graphs/
+  ```
+</ParamField>
+
+<ParamField path="graph_output_dir" type="path" required>
+  Output directory where plots will be saved. Must be empty or non-existent.
+  
+  ```bash
+  afl-plot out/fuzzer01 /var/www/html/graphs/
+  ```
+</ParamField>
+
+## Options
+
+<ParamField path="-g, --graphical" type="boolean">
+  Display plots in a graphical window (requires afl-plot-ui).
+  
+  ```bash
+  afl-plot -g out/fuzzer01 graphs/
+  ```
+</ParamField>
+
+## Examples
+
+### Basic Plot Generation
+
+```bash
+# Generate plots
+afl-plot out/main_fuzzer/ graphs/
+
+# Output files created:
+# graphs/index.html
+# graphs/high_freq.png  
+# graphs/low_freq.png
+# graphs/exec_speed.png
+```
+
+### View in Browser
+
+```bash
+# Generate plots
+afl-plot out/fuzzer01/ /var/www/html/fuzzing/
+
+# Open in browser
+firefox /var/www/html/fuzzing/index.html
+```
+
+### Live Monitoring
+
+```bash
+# Set up web server
+mkdir -p /var/www/html/fuzzing
+
+# Generate plots every 10 minutes  
+while true; do
+  afl-plot out/fuzzer01/ /var/www/html/fuzzing/
+  sleep 600
+done
+
+# Access at http://localhost/fuzzing/
+```
+
+### Multiple Fuzzers
+
+```bash
+# Plot each fuzzer separately
+afl-plot sync/fuzzer01/ graphs/fuzzer01/
+afl-plot sync/fuzzer02/ graphs/fuzzer02/
+afl-plot sync/fuzzer03/ graphs/fuzzer03/
+
+# Create index page
+cat > graphs/index.html <<EOF
+<html>
+<body>
+  <h1>Fuzzing Progress</h1>
+  <ul>
+    <li><a href="fuzzer01/index.html">Fuzzer 01</a></li>
+    <li><a href="fuzzer02/index.html">Fuzzer 02</a></li>
+    <li><a href="fuzzer03/index.html">Fuzzer 03</a></li>
+  </ul>
+</body>
+</html>
+EOF
+```
+
+## Generated Graphs
+
+### high_freq.png
+
+High-frequency metrics updated frequently:
+
+- **Paths found** - Total unique paths discovered
+- **Crashes found** - Unique crashes
+- **Hangs found** - Unique hangs
+- **Levels** - Queue depth
+
+### low_freq.png
+
+Low-frequency metrics:
+
+- **Corpus count** - Number of test cases in queue
+- **Pending paths** - Items not yet fully fuzzed
+- **Stability** - Execution path stability percentage
+
+### exec_speed.png
+
+Execution performance:
+
+- **Execs per second** - Fuzzing throughput over time
+- **Execs done** - Cumulative total executions
+
+## Output Structure
+
+```
+graphs/
+├── index.html        # Main HTML page with all graphs
+├── high_freq.png     # High-frequency metrics plot
+├── low_freq.png      # Low-frequency metrics plot
+└── exec_speed.png    # Execution speed plot
+```
+
+## Use Cases
+
+### Campaign Monitoring
+
+```bash
+# Set up automated plotting
+crontab -e
+
+# Add:
+*/10 * * * * /usr/local/bin/afl-plot /fuzzing/out/main /var/www/fuzzing/
+
+# Monitor at http://your-server/fuzzing/
+```
+
+### Performance Analysis
+
+```bash
+# Generate plots after fuzzing campaign
+afl-plot archived/campaign_2024/ analysis/
+
+# Review graphs to identify:
+# - When coverage plateaued
+# - Execution speed trends  
+# - Crash discovery timeline
+```
+
+### Progress Reporting
+
+```bash
+# Generate plots for weekly report
+afl-plot out/fuzzer01/ weekly_report/$(date +%Y-%m-%d)/
+
+# Include graphs in documentation
+cp weekly_report/$(date +%Y-%m-%d)/*.png report/images/
+```
+
+### Comparing Fuzzing Strategies
+
+```bash
+# Run two campaigns with different strategies
+afl-fuzz -p fast -i seeds -o out1 -- ./target @@
+afl-fuzz -p explore -i seeds -o out2 -- ./target @@
+
+# Plot both
+afl-plot out1/ graphs/fast_schedule/
+afl-plot out2/ graphs/explore_schedule/
+
+# Compare graphs to see which strategy works better
+```
+
+## Interpreting Graphs
+
+### Good Signs
+
+```
+Paths found: Steady upward trend
+Crashes:     New crashes appearing  
+Speed:       Consistent exec/sec
+Stability:   High (&gt;95%)
+```
+
+### Warning Signs  
+
+```
+Paths found: Flatlined (no new paths for hours)
+Speed:       Declining significantly
+Stability:   Low (<80%)
+Pending:     Growing without bound
+```
+
+## Requirements
+
+### System Dependencies
+
+```bash
+# Install gnuplot
+sudo apt-get install gnuplot  # Debian/Ubuntu
+sudo yum install gnuplot      # RHEL/CentOS
+brew install gnuplot          # macOS
+```
+
+### Minimum Data
+
+```bash
+# plot_data needs at least 3 lines
+wc -l out/fuzzer01/plot_data
+150 out/fuzzer01/plot_data  # OK
+
+2 out/fuzzer01/plot_data    # Error: too little data
+```
+
+## Troubleshooting
+
+### "plot_data carries too little data"
+
+```bash
+# Wait for more fuzzing data to accumulate
+# plot_data is updated every sync cycle (default: 10 minutes)
+
+# Check current data
+head out/fuzzer01/plot_data
+# unix_time, cycles_done, cur_item, corpus_count, ...
+```
+
+### "Output directory not empty"
+
+```bash
+# Remove old graphs first
+rm -rf graphs/*
+afl-plot out/fuzzer01/ graphs/
+
+# Or use a fresh directory
+afl-plot out/fuzzer01/ graphs_new/
+```
+
+### Graphs Not Updating
+
+```bash
+# Check that fuzzer is still running
+ps aux | grep afl-fuzz
+
+# Check plot_data is being updated
+ls -l out/fuzzer01/plot_data
+```
+
+## Advanced Usage
+
+### Custom Styling
+
+After generation, you can modify the HTML:
+
+```bash
+# Generate plots
+afl-plot out/fuzzer01/ graphs/
+
+# Customize index.html
+vi graphs/index.html
+# Add CSS, branding, etc.
+```
+
+### Automated Publishing
+
+```bash
+#!/bin/bash
+# publish_graphs.sh
+
+TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
+DIR="/var/www/fuzzing/$TIMESTAMP"
+
+mkdir -p "$DIR"
+afl-plot out/main_fuzzer/ "$DIR/"
+
+# Create "latest" symlink
+ln -sfn "$DIR" /var/www/fuzzing/latest
+
+echo "Graphs published to http://your-server/fuzzing/latest/"
+```
+
+### Integration with CI/CD
+
+```yaml
+# .gitlab-ci.yml example
+fuzzing:report:
+  stage: report
+  script:
+    - afl-plot fuzzing_results/ public/graphs/
+  artifacts:
+    paths:
+      - public/
+  only:
+    - schedules
+```
+
+## Plot Data Format
+
+The `plot_data` file contains tab-separated values:
+
+```
+# unix_time, cycles_done, cur_item, corpus_count, pending_total, 
+# pending_favs, map_size, saved_crashes, saved_hangs, max_depth,
+# execs_per_sec, total_execs, edges_found
+
+1701234567  1  0   100  10  5  65536  0  0  2  1234  123456  789
+1701234627  1  15  102  8   4  65536  0  0  2  1245  135678  791
+...
+```
+
+## See Also
+
+- [afl-fuzz](/commands/afl-fuzz) - Main fuzzing engine (generates plot_data)
+- [afl-whatsup](/commands/afl-whatsup) - Multi-fuzzer status monitor

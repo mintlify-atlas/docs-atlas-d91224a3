@@ -1,0 +1,503 @@
+---
+title: Binary-Only Fuzzing
+description: Guide to fuzzing binaries without source code using QEMU, FRIDA, and binary rewriters
+---
+
+When source code isn't available, AFL++ offers multiple solutions for fuzzing binary-only targets. This guide covers the fastest and most effective techniques.
+
+## Quick Recommendations
+
+**Fastest options** (if persistent mode is possible):
+- FRIDA mode with persistent mode
+- QEMU mode with persistent mode
+
+**Best fallback options**:
+1. ZAFL (binary rewriter) - 90-95% speed of source instrumentation
+2. RetroWrite (binary rewriter) - close to source speed
+3. QEMU mode with `AFL_ENTRYPOINT`/`AFL_EXITPOINT`
+4. FRIDA mode
+
+**For non-Linux targets**:
+- Unicorn mode (any architecture, any OS)
+- WINE+QEMU (Windows PE binaries)
+
+## QEMU Mode
+
+QEMU mode is the native AFL++ solution for binary-only fuzzing using user-space emulation.
+
+### Building QEMU Mode
+
+```bash
+cd qemu_mode
+./build_qemu_support.sh
+cd ..
+```
+
+### Basic Usage
+
+```bash
+# Simple QEMU fuzzing
+afl-fuzz -Q -i input -o output -- ./target @@
+
+# For stdin-based targets
+afl-fuzz -Q -i input -o output -- ./target
+```
+
+### Recommended Multi-Instance Setup
+
+For production fuzzing, run these instances:
+
+```bash
+# Instance 1: QEMU with CMPLOG
+AFL_COMPCOV_LEVEL=2 afl-fuzz -Q -c 0 -S qemu-cmplog -i input -o output -- ./target @@
+
+# Instance 2: QEMU with QASAN (sanitizer)
+AFL_USE_QASAN=1 afl-fuzz -Q -S qemu-asan -i input -o output -- ./target @@
+
+# Instance 3: QEMU with LAF-Intel
+AFL_PRELOAD=libcmpcov.so AFL_COMPCOV_LEVEL=2 afl-fuzz -Q -S qemu-laf -i input -o output -- ./target @@
+
+# Remaining instances: standard QEMU mode
+afl-fuzz -Q -S qemu-1 -i input -o output -- ./target @@
+afl-fuzz -Q -S qemu-2 -i input -o output -- ./target @@
+```
+
+### Performance Optimization
+
+QEMU mode has approximately **50% speed reduction** compared to source instrumentation. Optimize it:
+
+<Steps>
+  <Step title="Use AFL_ENTRYPOINT">
+    Move the forkserver to a later point in execution:
+    
+    ```bash
+    # Find a good entry point after initialization
+    export AFL_ENTRYPOINT=0x400a80
+    afl-fuzz -Q -i input -o output -- ./target @@
+    ```
+    
+    Provides 5-10% speed increase.
+  </Step>
+  
+  <Step title="Use Persistent Mode">
+    Achieve **3-8x speed improvement** with persistent mode:
+    
+    ```bash
+    # Set persistent address and loop count
+    export AFL_QEMU_PERSISTENT_ADDR=0x400b20
+    export AFL_QEMU_PERSISTENT_CNT=10000
+    export AFL_QEMU_PERSISTENT_HOOK=/path/to/hook.so
+    
+    afl-fuzz -Q -i input -o output -- ./target @@
+    ```
+    
+    See [QEMU Persistent Mode](/binary-modes/qemu-mode#persistent-mode) for implementation details.
+  </Step>
+  
+  <Step title="Limit Instrumentation Range">
+    Instrument only specific code sections:
+    
+    ```bash
+    export AFL_CODE_START=0x400000
+    export AFL_CODE_END=0x450000
+    
+    afl-fuzz -Q -i input -o output -- ./target @@
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+QEMU persistent mode can achieve **150-300% overall speed increase**, making it faster than standard source instrumentation!
+</Tip>
+
+### QEMU Mode Resources
+
+- [QEMU Mode Documentation](/binary-modes/qemu-mode)
+- [QEMU Persistent Mode Guide](/binary-modes/qemu-mode#persistent-mode)
+
+## FRIDA Mode
+
+FRIDA mode offers similar functionality to QEMU with some advantages:
+- Often slightly faster than QEMU
+- Works on macOS (Intel and M1)
+- Excellent for mobile fuzzing (iOS/Android)
+
+### Building FRIDA Mode
+
+```bash
+cd frida_mode
+gmake
+cd ..
+```
+
+### Basic Usage
+
+```bash
+# Basic FRIDA fuzzing
+afl-fuzz -O -i input -o output -- ./target @@
+
+# With persistent mode (if available)
+AFL_FRIDA_PERSISTENT_ADDR=0x400b20 afl-fuzz -O -i input -o output -- ./target @@
+```
+
+### Remote Fuzzing
+
+FRIDA excels at fuzzing on remote devices:
+
+```bash
+# Connect to remote device (iOS/Android)
+export AFL_FRIDA_REMOTE_ADDR=192.168.1.100:27042
+afl-fuzz -O -i input -o output -- ./target @@
+```
+
+For advanced remote fuzzing, use [fpicker](https://github.com/ttdennis/fpicker/) as an intermediate.
+
+### FRIDA Mode Resources
+
+- [FRIDA Mode Documentation](/binary-modes/frida-mode)
+- [Persistent Mode Guide](/instrumentation/persistent-mode)
+
+## Binary Rewriters
+
+Binary rewriters statically instrument binaries, achieving near-source-code speeds.
+
+### ZAFL (Recommended)
+
+ZAFL provides the best performance among binary rewriters.
+
+**Features:**
+- Supports x86-64 C/C++
+- Handles stripped/unstripped binaries
+- Works with PIE and non-PIE
+- **90-95% speed** of afl-clang-fast
+- Supports advanced transformations (LAF-Intel, context sensitivity)
+
+**Installation:**
+
+```bash
+git clone https://git.zephyr-software.com/opensrc/zafl
+cd zafl
+# Follow ZAFL build instructions
+```
+
+**Usage:**
+
+```bash
+# Rewrite binary
+zafl-rewrite ./target ./target-instrumented
+
+# Fuzz normally
+afl-fuzz -i input -o output -- ./target-instrumented @@
+```
+
+### RetroWrite
+
+RetroWrite decompiles binaries to assembly for instrumentation.
+
+**Requirements:**
+- x86_64 or ARM64 binaries
+- Must have symbols (not stripped)
+- Must be compiled with PIE/PIC
+- No C++ exceptions
+
+**Installation:**
+
+```bash
+pip3 install retrowrite
+```
+
+**Usage:**
+
+```bash
+# Decompile to assembly
+retrowrite --asan ./target ./target.s
+
+# Compile with afl-gcc (AFL++ v4.21c or earlier)
+afl-gcc ./target.s -o target-instrumented
+
+# Fuzz
+afl-fuzz -i input -o output -- ./target-instrumented @@
+```
+
+<Warning>
+RetroWrite requires afl-gcc, which was removed in AFL++ v4.22c. Use ZAFL instead for newer AFL++ versions.
+</Warning>
+
+### Dyninst
+
+Dyninst instruments binaries at load time.
+
+**Advantages:**
+- Works on many binary types
+- 15-35% speed reduction (better than QEMU)
+
+**Disadvantages:**
+- Often causes crashes due to code relocation issues
+- Can be unstable
+
+**Installation:**
+
+```bash
+git clone https://github.com/vanhauser-thc/afl-dyninst
+cd afl-dyninst
+make
+```
+
+**Usage:**
+
+```bash
+# Instrument binary
+./afl-dyninst -i ./target -o ./target-instrumented -e main -s 100
+
+# Fuzz
+afl-fuzz -i input -o output -- ./target-instrumented @@
+```
+
+## Specialized Modes
+
+### WINE+QEMU (Windows Binaries)
+
+Fuzz Windows PE binaries on Linux:
+
+**Requirements:**
+- Wine
+- Python 3
+- pefile package: `pip3 install pefile`
+
+**Usage:**
+
+```bash
+# Build WINE+QEMU support
+cd qemu_mode
+./build_qemu_support.sh
+cd ..
+
+# Fuzz Windows binary
+AFL_WINE=1 afl-fuzz -Q -i input -o output -- wine ./target.exe @@
+```
+
+See [WINE Mode Documentation](/binary-modes/qemu-mode#wine-mode) for details.
+
+### Unicorn Mode (Any Architecture)
+
+Unicorn mode emulates any CPU architecture but requires custom scripts.
+
+**Use cases:**
+- Embedded firmware
+- Non-x86 architectures
+- Partial binary emulation
+- Specialized environments
+
+**Building:**
+
+```bash
+cd unicorn_mode
+./build_unicorn_support.py
+```
+
+**Usage:**
+
+Write a Python harness:
+
+```python
+from unicornafl import *
+
+# Your emulation setup
+uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+# ... configure memory, load binary, etc.
+
+# Start fuzzing
+uc.afl_fuzz(input_file, place_input_callback, exits)
+```
+
+See [Unicorn Mode Documentation](/binary-modes/unicorn-mode) for complete examples.
+
+### Nyx Mode (Full System Fuzzing)
+
+Nyx provides full system emulation with snapshot support.
+
+**Features:**
+- KVM-based (very fast)
+- Full system snapshots
+- x86_64 Linux only
+
+**Use cases:**
+- Kernel fuzzing
+- Driver fuzzing
+- Complex multi-process targets
+
+**Requirements:**
+- Linux host
+- KVM support
+- Special 5.10 kernel for fuzzing
+
+**Building:**
+
+```bash
+cd nyx_mode
+./build_nyx_support.sh
+```
+
+See [Nyx Mode Documentation](/binary-modes/nyx-mode) for setup.
+
+### Coresight (ARM Hardware Tracing)
+
+Coresight uses ARM's hardware tracing (like Intel PT).
+
+**Features:**
+- Faster than QEMU for ARM
+- Hardware-assisted coverage
+
+**Limitations:**
+- Only one process can be traced at a time (WIP)
+- Cannot run parallel instances
+- ARM only
+
+**Building:**
+
+```bash
+cd coresight_mode
+./build_coresight_support.sh
+```
+
+See [Coresight Mode Documentation](/binary-modes/qemu-mode).
+
+## Fuzzing Shared Libraries
+
+To fuzz a shared library without source:
+
+<Steps>
+  <Step title="Write a Harness">
+    Create a small program that loads and calls the library:
+    
+    ```c
+    #include <dlfcn.h>
+    
+    int main(int argc, char **argv) {
+      void *handle = dlopen("./libtarget.so", RTLD_NOW);
+      void (*fuzz_func)(char *) = dlsym(handle, "process_input");
+      
+      fuzz_func(argv[1]);
+      return 0;
+    }
+    ```
+  </Step>
+  
+  <Step title="Fuzz with QEMU or FRIDA">
+    ```bash
+    # QEMU mode with library instrumentation
+    AFL_INST_LIBS=1 afl-fuzz -Q -i input -o output -- ./harness @@
+    
+    # Or FRIDA mode with specific ranges
+    AFL_FRIDA_INST_RANGES=libtarget.so afl-fuzz -O -i input -o output -- ./harness @@
+    ```
+  </Step>
+</Steps>
+
+## Performance Comparison
+
+| Method | Speed vs Source | Pros | Cons |
+|--------|----------------|------|------|
+| **QEMU (basic)** | 50% | Easy to use, cross-platform | Slower |
+| **QEMU (persistent)** | 150-300% | Very fast, no modifications | Requires setup |
+| **FRIDA (basic)** | 55% | macOS support, remote fuzzing | Slightly slower |
+| **FRIDA (persistent)** | 150-300% | Very fast, mobile support | Requires setup |
+| **ZAFL** | 90-95% | Near-native speed, easy | x86-64 only |
+| **RetroWrite** | 85-95% | Good speed | Requires symbols, PIE |
+| **Dyninst** | 65-85% | Flexible | Often crashes |
+| **Unicorn** | 10-30% | Any architecture | Very slow, requires scripting |
+| **DynamoRIO** | 1-2% | Cross-platform | Extremely slow |
+| **Intel PT** | 10-30% | Hardware-assisted | Complex setup, Intel only |
+
+## Common Configurations
+
+### Desktop Application (x86-64 Linux)
+
+```bash
+# Try binary rewriters first
+zafl-rewrite ./app ./app-instrumented
+afl-fuzz -i input -o output -- ./app-instrumented @@
+
+# Fallback: QEMU with persistence
+export AFL_QEMU_PERSISTENT_ADDR=0x401234
+afl-fuzz -Q -i input -o output -- ./app @@
+```
+
+### Mobile App (Android/iOS)
+
+```bash
+# Use FRIDA remote mode
+export AFL_FRIDA_REMOTE_ADDR=device-ip:27042
+AFL_FRIDA_PERSISTENT_ADDR=0x12345 afl-fuzz -O -i input -o output -- ./app
+```
+
+### Embedded Firmware (ARM)
+
+```bash
+# Use Unicorn mode with custom harness
+cd unicorn_mode
+python3 fuzz_firmware.py
+```
+
+### Windows Application
+
+```bash
+# Use WINE+QEMU
+AFL_WINE=1 afl-fuzz -Q -i input -o output -- wine ./app.exe @@
+```
+
+## Troubleshooting
+
+### Binary Crashes Immediately
+
+```bash
+# Check if target runs normally
+./target test_input
+
+# Try without AFL
+AFL_DEBUG=1 afl-fuzz -Q -i input -o output -- ./target @@
+
+# Set AFL_ENTRYPOINT after initialization
+export AFL_ENTRYPOINT=0x400a00
+```
+
+### Low Stability
+
+```bash
+# Use AFL_ENTRYPOINT to skip variable initialization
+export AFL_ENTRYPOINT=0x401000
+
+# Increase timeout
+afl-fuzz -Q -t 1000 -i input -o output -- ./target @@
+```
+
+### Can't Find Instrumentation Libraries
+
+```bash
+# Set LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/path/to/afl++:$LD_LIBRARY_PATH
+
+# Or use AFL_PRELOAD
+export AFL_PRELOAD=/path/to/libcmpcov.so
+```
+
+## Best Practices
+
+<Tip>
+**Always try binary rewriters first** - ZAFL provides 90-95% source code speed without any setup complexity.
+</Tip>
+
+<Tip>
+**Use persistent mode when possible** - The 3-8x speed improvement makes binary fuzzing competitive with source fuzzing.
+</Tip>
+
+<Warning>
+Binary fuzzing uses more CPU and RAM than source fuzzing. Reduce the number of parallel instances accordingly.
+</Warning>
+
+## Next Steps
+
+- Learn [Source Code Fuzzing](/guides/source-code-fuzzing) for comparison
+- Explore [Network Service Fuzzing](/guides/network-services) for networked targets
+- Review [Best Practices](/guides/best-practices) for advanced optimization
+- Check [Instrumentation Modes](/concepts/instrumentation) for detailed mode documentation

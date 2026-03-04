@@ -1,0 +1,487 @@
+---
+title: Nyx Mode
+description: Full system emulation fuzzing with snapshotting for source and binary-only targets
+---
+
+Nyx is a full system emulation fuzzing mode that supports snapshotting and works with both source code instrumentation and binary-only targets. It's built on KVM and QEMU for high performance.
+
+## Overview
+
+Nyx mode is recommended when the target cannot be fuzzed in persistent mode and requires default fork mode fuzzing. It provides full system emulation with efficient snapshotting.
+
+**Platform Support**: Linux only
+
+**Architectures**: x86_64 (aarch64 support in development)
+
+**Kernel Requirements**:
+- Source instrumentation: Linux kernel 5.11+
+- Binary-only (Intel PT): Special 5.10 kernel with [KVM-Nyx](https://github.com/nyx-fuzz/KVM-Nyx)
+
+**Binary-Only Requirements**: Intel processor (6th generation or newer) for Intel PT support
+
+## Building Nyx Mode
+
+<Steps>
+
+### Install Base Dependencies
+
+Install all packages from the [main installation guide](../getting-started/installing.mdx).
+
+### Install Nyx-Specific Dependencies
+
+```bash
+sudo apt-get install -y libgtk-3-dev pax-utils python3-msgpack \
+    python3-jinja2 libcapstone-dev
+```
+
+### Install Rust Compiler
+
+Nyx requires a recent Rust compiler (distribution packages are usually too old):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+### Build Nyx Support
+
+From the AFL++ root directory:
+
+```bash
+cd nyx_mode
+./build_nyx_support.sh
+```
+
+Or build all AFL++ modes at once:
+
+```bash
+make distrib
+```
+
+### Set Up Kernel (Binary-Only Fuzzing)
+
+For binary-only fuzzing with Intel PT, install the special 5.10 kernel:
+
+[KVM-Nyx Installation Guide](https://github.com/nyx-fuzz/KVM-Nyx)
+
+</Steps>
+
+## Preparing Targets
+
+### Source Instrumentation
+
+You can use any afl-cc mode. LTO mode even supports auto-dictionary:
+
+```bash
+CC=afl-clang-fast CXX=afl-clang-fast++ make
+```
+
+<Note>
+CMPLOG is not currently supported in Nyx mode.
+</Note>
+
+### Packaging the Target
+
+Nyx requires targets to be specially packaged for full system emulation.
+
+<Steps>
+
+### Create Package Directory
+
+For source-instrumented targets:
+
+```bash
+python3 nyx_mode/packer/packer/nyx_packer.py \
+    /PATH/TO/TARGET \
+    PACKAGE-DIRECTORY \
+    afl \
+    instrumentation \
+    --fast_reload_mode \
+    --purge
+```
+
+For binary-only targets (with special 5.10 kernel):
+
+```bash
+python3 nyx_mode/packer/packer/nyx_packer.py \
+    /PATH/TO/TARGET \
+    PACKAGE-DIRECTORY \
+    afl \
+    processor_trace \
+    --fast_reload_mode \
+    --purge
+```
+
+### Handle File Input (If Needed)
+
+If the target reads from a file:
+
+```bash
+python3 nyx_mode/packer/packer/nyx_packer.py \
+    /PATH/TO/TARGET \
+    PACKAGE-DIRECTORY \
+    afl \
+    instrumentation \
+    -file /path/to/input.file \
+    -args "--file /path/to/input.file --other-args" \
+    --fast_reload_mode \
+    --purge
+```
+
+<Warning>
+Nyx does **not** support the AFL++ `@@` argument. Use explicit `-file` and `-args` parameters instead.
+</Warning>
+
+### Generate Configuration
+
+```bash
+python3 nyx_mode/packer/packer/nyx_config_gen.py PACKAGE-DIRECTORY Kernel
+```
+
+</Steps>
+
+## Fuzzing with Nyx Mode
+
+### Load KVM Modules
+
+Before fuzzing, load the required kernel modules:
+
+```bash
+sudo modprobe -r kvm-intel
+sudo modprobe -r kvm
+sudo modprobe kvm enable_vmware_backdoor=y
+sudo modprobe kvm-intel
+
+# Verify
+cat /sys/module/kvm/parameters/enable_vmware_backdoor | grep -q Y && echo OK || echo KVM module problem
+```
+
+### Standalone Fuzzing
+
+For single-instance fuzzing:
+
+```bash
+afl-fuzz -i input_dir -o output_dir -X -- ./PACKAGE-DIRECTORY
+```
+
+<Note>
+If you get a forkserver error, ensure KVM kernel modules are loaded (see above).
+</Note>
+
+### Parallel Fuzzing
+
+Nyx mode requires a special parallel fuzzing setup:
+
+<Steps>
+
+### Start Main Instance
+
+Use `-Y` (multiprocessor mode) with `-M 0`:
+
+```bash
+afl-fuzz -i input_dir -o output_dir -Y -M 0 -- ./PACKAGE-DIRECTORY
+```
+
+### Start Secondary Instances
+
+Launch additional instances with increasing numbers:
+
+```bash
+# Second instance
+afl-fuzz -i input_dir -o output_dir -Y -S 1 -- ./PACKAGE-DIRECTORY
+
+# Third instance
+afl-fuzz -i input_dir -o output_dir -Y -S 2 -- ./PACKAGE-DIRECTORY
+
+# And so on...
+```
+
+</Steps>
+
+<Warning>
+You **must** start the Main instance (`-M 0`) before starting any Secondary instances.
+</Warning>
+
+## AFL++ Companion Tools
+
+All AFL++ tools support Nyx mode with the `-X` flag.
+
+### afl-tmin
+
+Minimize a crashing input:
+
+```bash
+afl-tmin -i crash_file -o minimized_file -X -- ./PACKAGE-DIRECTORY
+```
+
+### afl-analyze
+
+Analyze input structure:
+
+```bash
+afl-analyze -i input_file -X -- ./PACKAGE-DIRECTORY
+```
+
+### afl-showmap
+
+Display coverage for inputs:
+
+```bash
+afl-showmap -i input_dir -o coverage.txt -X -- ./PACKAGE-DIRECTORY
+```
+
+### afl-cmin
+
+Minimize corpus:
+
+```bash
+afl-cmin -i input_dir -o minimized_dir -X -- ./PACKAGE-DIRECTORY
+```
+
+## Performance Optimization
+
+### Reusing Snapshots
+
+Nyx tools perform bootstrapping on each startup, which is slow. Reuse existing snapshots for better performance:
+
+<Steps>
+
+### Create Initial Snapshot
+
+Run afl-fuzz to create a snapshot:
+
+```bash
+afl-fuzz -i input_dir -o output_dir -Y -M 0 -- ./PACKAGE-DIRECTORY
+```
+
+The snapshot is stored at `output_dir/workdir/snapshot/`.
+
+### Reuse Snapshot in Tools
+
+Set the snapshot path when using other tools:
+
+```bash
+export AFL_NYX_REUSE_SNAPSHOT=./output_dir/workdir/snapshot/
+
+afl-analyze -i input_file -X -- ./PACKAGE-DIRECTORY
+afl-tmin -i crash -o min -X -- ./PACKAGE-DIRECTORY
+```
+
+</Steps>
+
+### Fast Reload Mode
+
+Enable fast snapshots by including `--fast_reload_mode` when packing (shown in examples above).
+
+To disable fast snapshots at runtime:
+
+```bash
+export AFL_NYX_DISABLE_SNAPSHOT_MODE=1
+```
+
+## Nyx Share Directories
+
+Nyx packages (share directories) contain:
+
+- **Target binary** and dependencies
+- **Bootstrap script**: `fuzz.sh` (for KVM-Nyx) or `fuzz_no_pt.sh` (for standard kernel)
+- **Configuration files** and setup scripts
+
+### Bootstrap Tools
+
+The bootstrap scripts have access to special hypercall-based tools:
+
+| Tool | Description |
+|------|-------------|
+| `hcat` | Copy string to host |
+| `hget` | Request file from host's share directory |
+| `hget_bulk` | Transfer large files (>100MB) efficiently |
+| `habort` | Send abort signal to host |
+| `hpush` | Transfer file to host (saved in `dump/` folder) |
+
+These tools use hypercalls defined in `packer/nyx.h`.
+
+## Crash Reports
+
+Nyx can provide detailed crash information:
+
+### Automatic Crash Logs
+
+For each saved crash, AFL++ creates a `.log` file containing:
+- Faulting address
+- Signal number
+- AddressSanitizer reports (if compiled with ASan)
+
+### Auxiliary Buffer Size
+
+Crash reports use the Nyx Auxiliary Buffer (default 4096 bytes):
+
+- **Header**: 1408 bytes reserved
+- **Crash report**: 2688 bytes by default
+
+To increase the buffer size:
+
+```bash
+export AFL_NYX_AUX_SIZE=8192  # Must be multiple of 4096
+```
+
+## Real-World Example: libxml2
+
+This example is based on the [libxml2 tutorial](../tutorials/libxml2_tutorial.md).
+
+<Steps>
+
+### Get and Build libxml2
+
+```bash
+git clone https://gitlab.gnome.org/GNOME/libxml2
+cd libxml2
+./autogen.sh
+./configure --enable-shared=no
+make CC=afl-clang-fast CXX=afl-clang-fast++ LD=afl-clang-fast
+```
+
+### Package for Nyx
+
+```bash
+cd ~/AFLplusplus/nyx_mode/packer/packer
+
+python3 ./nyx_packer.py \
+    ~/libxml2/xmllint \
+    /tmp/nyx_libxml2 \
+    afl \
+    instrumentation \
+    -args "/tmp/input" \
+    -file "/tmp/input" \
+    --fast_reload_mode \
+    --purge
+```
+
+### Generate Configuration
+
+```bash
+python3 ./nyx_config_gen.py /tmp/nyx_libxml2/ Kernel
+```
+
+### Run Fuzzer
+
+```bash
+mkdir /tmp/in/
+echo "AAAA" > /tmp/in/A
+afl-fuzz -i /tmp/in/ -o /tmp/out -X /tmp/nyx_libxml2/
+```
+
+</Steps>
+
+### Expected Output
+
+```
+        american fuzzy lop ++3.15a {default} (/tmp/nyx_libxml2/) [fast] - NYX
+┌─ process timing ────────────────────────────────────┬─ overall results ────┐
+│        run time : 0 days, 0 hrs, 0 min, 14 sec      │  cycles done : 0     │
+│   last new find : 0 days, 0 hrs, 0 min, 0 sec       │ corpus count : 96    │
+│last saved crash : none seen yet                     │saved crashes : 0     │
+│ last saved hang : none seen yet                     │  saved hangs : 0     │
+├─ cycle progress ─────────────────────┬─ map coverage┴──────────────────────┤
+│  now processing : 28.0 (29.2%)       │    map density : 2.17% / 3.61%      │
+│  runs timed out : 0 (0.00%)          │ count coverage : 1.67 bits/tuple    │
+├─ stage progress ─────────────────────┼─ findings in depth ─────────────────┤
+│  now trying : havoc                  │ favored items : 27 (28.12%)         │
+│ stage execs : 22.3k/32.8k (68.19%)   │  new edges on : 58 (60.42%)         │
+│ total execs : 55.9k                  │ total crashes : 0 (0 saved)         │
+│  exec speed : 3810/sec               │  total tmouts : 0 (0 saved)         │
+└──────────────────────────────────────┴──────────────────────────────────────┘
+```
+
+## Custom Harnesses
+
+For custom fuzzing harnesses or direct hypercall implementation:
+
+<Steps>
+
+### Review Example
+
+See the custom harness example in `nyx_mode/custom_harness/`.
+
+### Create Share Directory
+
+```bash
+mkdir /tmp/nyx_custom_agent/
+```
+
+### Compile Target
+
+Compile statically (no AFL compiler needed for custom harness):
+
+```bash
+gcc example.c -DNO_PT_NYX -static -I ../packer/ -o /tmp/nyx_custom_agent/target
+```
+
+Remove `-DNO_PT_NYX` if using KVM-Nyx.
+
+### Copy Bootstrap Scripts
+
+```bash
+cp fuzz.sh /tmp/nyx_custom_agent/
+cp fuzz_no_pt.sh /tmp/nyx_custom_agent/
+```
+
+### Copy htools
+
+```bash
+cd ~/AFLplusplus/packer/packer/linux_x86_64-userspace/
+sh compile_64.sh
+cp bin64/h* /tmp/nyx_custom_agent/
+```
+
+### Generate Configuration
+
+```bash
+cd ~/AFLplusplus/packer/packer
+python3 ./nyx_config_gen.py /tmp/nyx_custom_agent/ Kernel
+```
+
+### Run Fuzzer
+
+```bash
+afl-fuzz -i input_dir -o output_dir -X /tmp/nyx_custom_agent/
+```
+
+</Steps>
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `AFL_NYX_REUSE_SNAPSHOT` | Path to existing snapshot for faster tool startup |
+| `AFL_NYX_DISABLE_SNAPSHOT_MODE` | Disable fast snapshots (except for crashes) |
+| `AFL_NYX_AUX_SIZE` | Size of auxiliary buffer for crash reports (must be multiple of 4096) |
+
+## Advantages Over Other Modes
+
+- **Full system emulation**: Supports complex targets requiring OS interactions
+- **Efficient snapshotting**: Fast state restoration between executions
+- **Source and binary**: Works with both instrumented and binary-only targets
+- **Intel PT support**: Binary-only fuzzing on modern Intel processors
+- **Low memory footprint**: Especially in distributed mode
+- **Detailed crash reports**: Comprehensive crash information including ASan output
+
+## Limitations
+
+- **Linux only**: No Windows or macOS support
+- **x86_64 only**: Currently limited to x86_64 (aarch64 coming)
+- **Kernel requirements**: Needs modern kernel (5.11+) or special 5.10 kernel for Intel PT
+- **Slower startup**: Bootstrapping overhead (mitigated by snapshot reuse)
+- **No CMPLOG**: CMPLOG mode not yet supported
+
+## When to Use Nyx Mode
+
+Nyx mode is ideal when:
+
+- Target requires full system emulation
+- Persistent mode is not feasible
+- You need efficient snapshotting for fork-mode fuzzing
+- You're fuzzing complex applications with OS dependencies
+- Binary-only fuzzing on Intel processors (with Intel PT)
+- You want low memory usage in parallel fuzzing
+
+For simpler binary-only targets, consider [QEMU mode](qemu-mode.mdx) or [FRIDA mode](frida-mode.mdx) instead.

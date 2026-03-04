@@ -1,0 +1,77 @@
+---
+title: Third-Party Tools and Integrations
+description: Tools and utilities that enhance AFL++ fuzzing workflows
+---
+
+## Language Support
+
+Extend AFL++ to other programming languages:
+
+- [afl-rs](https://github.com/rust-fuzz/afl.rs) - AFL++ for Rust
+- [WAFL](https://github.com/fgsect/WAFL) - AFL++ for WebAssembly
+
+## Parallel Fuzzing
+
+Tools to manage multiple AFL++ instances with optimized settings:
+
+- [AFL_Runner](https://github.com/0xricksanchez/AFL_Runner) - Advanced parallel fuzzing orchestration
+- [AFLplusplus-Parallel-Gen](https://github.com/MegaManSec/AFLplusplus-Parallel-Gen) - Generate parallel fuzzing configurations
+
+## Performance Optimization
+
+### Speed Improvements
+
+- [libfiowrapper](https://github.com/marekzmyslowski/libfiowrapper) - Use shared memory test case feature for file-loading functions (recommended)
+
+### Test Case Minimization
+
+- [afl-pytmin](https://github.com/ilsani/afl-pytmin) - Wrapper for afl-tmin using multiple CPU cores
+- [afl-ddmin-mod](https://github.com/MarkusTeufelberger/afl-ddmin-mod) - ddmin algorithm-based minimization
+- [halfempty](https://github.com/googleprojectzero/halfempty) - Fast parallel minimization by Tavis Ormandy
+
+## Distributed Fuzzing
+
+Run AFL++ campaigns across multiple machines:
+
+- [disfuzz-afl](https://github.com/MartijnB/disfuzz-afl) - Distributed fuzzing for AFL
+- [AFLDFF](https://github.com/quantumvm/AFLDFF) - AFL distributed fuzzing framework
+- [afl-launch](https://github.com/bnagy/afl-launch) - Execute many AFL instances
+- [afl-mothership](https://github.com/afl-mothership/afl-mothership) - Manage synchronized fuzzers on AWS
+- [afl-in-the-cloud](https://github.com/abhisek/afl-in-the-cloud) - Run AFL in AWS
+
+## Management and Monitoring
+
+### Campaign Management
+
+- [afl-utils](https://gitlab.com/rc0r/afl-utils) - Automatic crash processing and test case reduction
+- [afl-other-arch](https://github.com/shellphish/afl-other-arch) - Support for non-x86 architectures
+- [afl-trivia](https://github.com/bnagy/afl-trivia) - Simplify AFL management
+- [afl-extras](https://github.com/fekir/afl-extras) - Parallelize afl-tmin, startup, and data collection
+
+### Monitoring
+
+- [afl-monitor](https://github.com/reflare/afl-monitor) - Monitor AFL fuzzing campaigns
+- [afl-manager](https://github.com/zx1340/afl-manager) - Python web server for multi-afl management
+- [afl-remote](https://github.com/block8437/afl-remote) - Remote management of AFL instances
+
+## Crash Analysis
+
+Tools to triage and analyze crashes:
+
+- [AFLTriage](https://github.com/quic/AFLTriage) - Triage crashing inputs using GDB
+- [afl-crash-analyzer](https://github.com/floyd-fuh/afl-crash-analyzer) - Crash analyzer for AFL
+- [CASR](https://github.com/ispras/casr) - Comprehensive crash triage and analysis suite
+- [fuzzer-utils](https://github.com/ThePatrickStar/fuzzer-utils) - Result analysis scripts
+- [atriage](https://github.com/Ayrx/atriage) - Simple triage tool
+- [afl-fid](https://github.com/FoRTE-Research/afl-fid) - Input data processing tools
+
+## Build and Integration
+
+- [afl-kit](https://github.com/kcwu/afl-kit) - afl-cmin implementation in Python
+- [AFLize](https://github.com/d33tah/aflize) - Automatically generate AFL-ready Debian package builds
+
+---
+
+<Note>
+If you know of other useful tools, please let us know or submit a PR to add them to this list!
+</Note>
